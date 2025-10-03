@@ -30,6 +30,11 @@ var (
 	s3Region       = "eu-west-1"
 )
 
+const (
+	uidPrefixBucket = "bucket:"
+	uidPrefixMeta   = "meta:"
+)
+
 // SortMode represents the bucket sorting mode
 type SortMode int
 
@@ -248,13 +253,13 @@ func (a *App) createTree() *widget.Tree {
 				filteredBuckets := a.getFilteredBuckets()
 				uids := make([]string, len(filteredBuckets))
 				for i, bucket := range filteredBuckets {
-					uids[i] = "bucket:" + bucket.Name
+					uids[i] = uidPrefixBucket + bucket.Name
 				}
 				return uids
 			}
 
 			// Check if this is a bucket node
-			if len(uid) > 7 && uid[:7] == "bucket:" {
+			if len(uid) > 7 && uid[:7] == uidPrefixBucket {
 				bucketName := uid[7:]
 				metadata, exists := a.treeData.bucketMetadata[bucketName]
 				if !exists {
@@ -263,10 +268,10 @@ func (a *App) createTree() *widget.Tree {
 
 				// Return metadata items as child nodes
 				items := []string{
-					"meta:" + bucketName + ":created",
-					"meta:" + bucketName + ":versioning",
-					"meta:" + bucketName + ":lock",
-					"meta:" + bucketName + ":retention",
+					uidPrefixMeta + bucketName + ":created",
+					uidPrefixMeta + bucketName + ":versioning",
+					uidPrefixMeta + bucketName + ":lock",
+					uidPrefixMeta + bucketName + ":retention",
 				}
 				_ = metadata // Avoid unused variable
 				return items
@@ -280,7 +285,7 @@ func (a *App) createTree() *widget.Tree {
 				return true
 			}
 			// Buckets are always branches (can be expanded)
-			if len(uid) > 7 && uid[:7] == "bucket:" {
+			if len(uid) > 7 && uid[:7] == uidPrefixBucket {
 				return true
 			}
 			// Metadata items are not branches
@@ -312,7 +317,7 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Handle bucket nodes
-			if len(uid) > 7 && uid[:7] == "bucket:" {
+			if len(uid) > 7 && uid[:7] == uidPrefixBucket {
 				bucketName := uid[7:]
 				for _, bucket := range a.treeData.buckets {
 					if bucket.Name == bucketName {
@@ -329,7 +334,7 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Handle metadata nodes
-			if len(uid) > 5 && uid[:5] == "meta:" {
+			if len(uid) > 5 && uid[:5] == uidPrefixMeta {
 				parts := uid[5:] // Remove "meta:" prefix
 				// Parse: bucketName:fieldName
 				lastColon := -1
@@ -429,7 +434,7 @@ func (a *App) createTree() *widget.Tree {
 	// Handle node opening (expansion)
 	tree.OnBranchOpened = func(uid string) {
 		// Check if this is a bucket that hasn't been loaded yet
-		if len(uid) > 7 && uid[:7] == "bucket:" {
+		if len(uid) > 7 && uid[:7] == uidPrefixBucket {
 			bucketName := uid[7:]
 			if _, exists := a.treeData.bucketMetadata[bucketName]; !exists {
 				go a.loadBucketMetadata(bucketName)
@@ -443,6 +448,17 @@ func (a *App) createTree() *widget.Tree {
 // refreshBuckets clears cached data and reloads the buckets list
 func (a *App) refreshBuckets() {
 	slog.Info("Refreshing S3 buckets")
+
+	// Close all open branches to reset the tree state
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		// Close all bucket branches by iterating through them
+		for _, bucket := range a.treeData.buckets {
+			bucketUID := uidPrefixBucket + bucket.Name
+			if a.tree.IsBranchOpen(bucketUID) {
+				a.tree.CloseBranch(bucketUID)
+			}
+		}
+	}, true)
 
 	// Clear cached bucket metadata
 	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
