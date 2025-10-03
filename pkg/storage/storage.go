@@ -79,42 +79,42 @@ func New(ctx context.Context) (*Storage, error) {
 // initSchema creates the database tables
 func (s *Storage) initSchema(ctx context.Context) error {
 	schema := `
-	CREATE TABLE IF NOT EXISTS sessions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		config_str TEXT NOT NULL UNIQUE,
-		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-	);
+CREATE TABLE IF NOT EXISTS sessions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	config_str TEXT NOT NULL UNIQUE,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
-	CREATE INDEX IF NOT EXISTS idx_sessions_config_str ON sessions(config_str);
+CREATE INDEX IF NOT EXISTS idx_sessions_config_str ON sessions(config_str);
 
-	CREATE TABLE IF NOT EXISTS buckets (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		session_id INTEGER NOT NULL,
-		name TEXT NOT NULL,
-		creation_date DATETIME NOT NULL, -- Bucket creation date from S3
-		details TEXT NOT NULL, -- JSON field
-		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-		UNIQUE(session_id, name)
-	);
+CREATE TABLE IF NOT EXISTS buckets (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	creation_date DATETIME NOT NULL, -- Bucket creation date from S3
+	details TEXT NOT NULL, -- JSON field
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+	UNIQUE(session_id, name)
+);
 
-	CREATE INDEX IF NOT EXISTS idx_buckets_session_id ON buckets(session_id);
-	CREATE INDEX IF NOT EXISTS idx_buckets_name ON buckets(name);
-	CREATE INDEX IF NOT EXISTS idx_buckets_creation_date ON buckets(creation_date);
+CREATE INDEX IF NOT EXISTS idx_buckets_session_id ON buckets(session_id);
+CREATE INDEX IF NOT EXISTS idx_buckets_name ON buckets(name);
+CREATE INDEX IF NOT EXISTS idx_buckets_creation_date ON buckets(creation_date);
 
-	CREATE TABLE IF NOT EXISTS objects (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		bucket_id INTEGER NOT NULL,
-		properties TEXT NOT NULL, -- JSON field
-		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (bucket_id) REFERENCES buckets(id) ON DELETE CASCADE
-	);
+CREATE TABLE IF NOT EXISTS objects (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	bucket_id INTEGER NOT NULL,
+	properties TEXT NOT NULL, -- JSON field
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (bucket_id) REFERENCES buckets(id) ON DELETE CASCADE
+);
 
-	CREATE INDEX IF NOT EXISTS idx_objects_bucket_id ON objects(bucket_id);
-	`
+CREATE INDEX IF NOT EXISTS idx_objects_bucket_id ON objects(bucket_id);
+`
 
 	_, err := s.db.ExecContext(ctx, schema)
 	return err
@@ -326,6 +326,50 @@ func (s *Storage) GetObjectsByBucket(ctx context.Context, bucketID int64) ([]Obj
 	}
 
 	return objects, nil
+}
+
+// InvalidateSession deletes a session and all associated data (cascades to buckets and objects),
+// creates a new session with the same config string, and returns the new session ID.
+func (s *Storage) InvalidateSession(ctx context.Context, sessionID int64) (int64, error) {
+	// Get the config string of the existing session
+	var configStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT config_str FROM sessions WHERE id = ?`,
+		sessionID,
+	).Scan(&configStr)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("session not found")
+		}
+		return 0, fmt.Errorf("failed to get session config: %w", err)
+	}
+
+	now := time.Now()
+
+	var newSessionID int64
+	return newSessionID, transactional(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		// Delete the existing session (cascades to buckets and objects)
+		_, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to delete session: %w", err)
+		}
+
+		// Insert a new session with the same config string
+		result, err := tx.ExecContext(ctx,
+			`INSERT INTO sessions (config_str, created_at, updated_at) VALUES (?, ?, ?)`,
+			configStr, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert new session: %w", err)
+		}
+
+		newSessionID, err = result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("failed to get last insert ID: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // DeleteSession deletes a session and all associated data (cascades to buckets and objects)

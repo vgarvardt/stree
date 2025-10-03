@@ -83,6 +83,7 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 	if a.sessionID, err = a.storage.UpsertSession(ctx, s3Cfg.String()); err != nil {
 		return fmt.Errorf("failed to store session to storage: %w", err)
 	}
+	slog.Info("Initialised storage session", slog.Int64("session-id", a.sessionID))
 
 	a.s3Client = s3Client
 	a.ctx = ctx
@@ -222,7 +223,11 @@ func (a *App) createTree() *widget.Tree {
 			// Handle bucket nodes
 			if len(uid) > 7 && uid[:7] == "bucket:" {
 				bucketName := uid[7:]
-				label.SetText(bucketName)
+				for _, bucket := range a.treeData.buckets {
+					if bucket.Name == bucketName {
+						label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
+					}
+				}
 				icon.SetResource(theme.FolderIcon())
 				return
 			}
@@ -340,6 +345,14 @@ func (a *App) refreshBuckets() {
 
 	// Clear cached bucket metadata
 	a.treeData.bucketMetadata = make(map[string]*s3client.BucketMetadata)
+
+	// Invalidate storage cache by deleting the current session
+	newSessionID, err := a.storage.InvalidateSession(a.ctx, a.sessionID)
+	if err != nil {
+		slog.Warn("Failed to invalidate storage cache", slogx.Error(err))
+	}
+	a.sessionID = newSessionID
+	slog.Info("Invalidated storage session", slog.Int64("session-id", a.sessionID))
 
 	// Reload buckets
 	a.loadBuckets()
