@@ -254,3 +254,8 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string) ([]m
 	slog.Info("Listed object versions", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
 	return versions, nil
 }
+
+// ListObjectVersionsRaw returns the raw AWS S3 ListObjectVersions response for more control
+func (c *Client) ListObjectVersionsRaw(ctx context.Context, input *s3.ListObjectVersionsInput) (*s3.ListObjectVersionsOutput, error) {
+	return c.s3Client.ListObjectVersions(ctx, input)
+}
