@@ -12,7 +12,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
 
-	"github.com/vgarvardt/stree/s3client"
+	"github.com/vgarvardt/stree/pkg/s3client"
 )
 
 // TODO: These will be configurable later

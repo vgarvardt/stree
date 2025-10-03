@@ -7,10 +7,10 @@ import (
 	"os"
 
 	"github.com/cappuccinotm/slogx"
-	"github.com/cappuccinotm/slogx/slogm"
 	"github.com/spf13/cobra"
 
-	"github.com/vgarvardt/stree/gui"
+	"github.com/vgarvardt/stree/pkg/gui"
+	"github.com/vgarvardt/stree/pkg/logging"
 )
 
 var (
@@ -25,7 +25,7 @@ func main() {
 		Use:     "stree [command]",
 		Version: fmt.Sprintf("%s (built %s)", version, built),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			logger := buildLogger(verboseLogs)
+			logger := logging.BuildLogger(verboseLogs)
 			slog.SetDefault(logger)
 
 			logger.Info("Starting main GUI app", slog.String("version", version), slog.String("built", built))
@@ -45,24 +45,4 @@ func main() {
 		slog.Error("command execution failed", slogx.Error(err))
 		os.Exit(1)
 	}
-}
-
-func buildLogger(verbose bool) *slog.Logger {
-	so := &slog.HandlerOptions{
-		AddSource: true,
-		Level:     map[bool]slog.Level{true: slog.LevelDebug, false: slog.LevelInfo}[verbose],
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if groups != nil {
-				return a
-			}
-
-			// TODO: turn source into relative path instead of full path
-			// TODO: remove "time=", "level=", "source=", "msg=" prefixes from the printed log lines
-			return a
-		},
-	}
-
-	logger := slog.New(slogx.NewChain(slog.NewTextHandler(os.Stderr, so), slogm.StacktraceOnError()))
-
-	return logger
 }
