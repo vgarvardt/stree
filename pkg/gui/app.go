@@ -15,6 +15,7 @@ import (
 	"github.com/cappuccinotm/slogx"
 	"github.com/goccy/go-json"
 
+	"github.com/vgarvardt/stree/pkg/models"
 	"github.com/vgarvardt/stree/pkg/s3client"
 	"github.com/vgarvardt/stree/pkg/storage"
 )
@@ -46,9 +47,9 @@ type App struct {
 
 // TreeData holds the hierarchical data for the tree widget
 type TreeData struct {
-	buckets        []s3client.Bucket
-	bucketMetadata map[string]*s3client.BucketMetadata // bucketName -> metadata
-	searchFilter   string                              // search filter for bucket names
+	buckets        []models.Bucket
+	bucketMetadata map[string]*models.BucketMetadata // bucketName -> metadata
+	searchFilter   string                            // search filter for bucket names
 }
 
 // NewApp creates a new GUI application
@@ -58,8 +59,8 @@ func NewApp(stor *storage.Storage, version string) *App {
 		version: version,
 		storage: stor,
 		treeData: &TreeData{
-			buckets:        []s3client.Bucket{},
-			bucketMetadata: make(map[string]*s3client.BucketMetadata),
+			buckets:        []models.Bucket{},
+			bucketMetadata: make(map[string]*models.BucketMetadata),
 			searchFilter:   "",
 		},
 	}
@@ -139,12 +140,12 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 }
 
 // getFilteredBuckets returns buckets filtered by the search query
-func (a *App) getFilteredBuckets() []s3client.Bucket {
+func (a *App) getFilteredBuckets() []models.Bucket {
 	if a.treeData.searchFilter == "" {
 		return a.treeData.buckets
 	}
 
-	filtered := make([]s3client.Bucket, 0)
+	filtered := make([]models.Bucket, 0)
 	for _, bucket := range a.treeData.buckets {
 		// Case-sensitive substring matching
 		if strings.Contains(bucket.Name, a.treeData.searchFilter) {
@@ -361,7 +362,7 @@ func (a *App) refreshBuckets() {
 	slog.Info("Refreshing S3 buckets")
 
 	// Clear cached bucket metadata
-	a.treeData.bucketMetadata = make(map[string]*s3client.BucketMetadata)
+	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
 
 	// Invalidate storage cache by deleting the current session
 	newSessionID, err := a.storage.InvalidateSession(a.ctx, a.sessionID)
@@ -436,13 +437,10 @@ func (a *App) loadBuckets() {
 
 	a.treeData.buckets = buckets
 
-	// Store all buckets to storage
+	// Store all buckets to storage using BucketDetails
 	for _, bucket := range buckets {
-		bucketData := map[string]any{
-			"Name":         bucket.Name,
-			"CreationDate": bucket.CreationDate,
-		}
-		if err := a.storage.UpsertBucket(context.TODO(), a.sessionID, bucket.Name, bucket.CreationDate, bucketData); err != nil {
+		details := models.NewBucketDetails(bucket, nil)
+		if err := a.storage.UpsertBucket(context.TODO(), a.sessionID, bucket.Name, bucket.CreationDate, details); err != nil {
 			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", bucket.Name))
 		}
 	}
@@ -469,40 +467,15 @@ func (a *App) loadBucketMetadata(bucketName string) {
 	if err != nil {
 		slog.Warn("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
 	} else if storedBucket != nil {
-		// Check if we have metadata in the stored details
-		var storedDetails map[string]any
-		if err := json.Unmarshal(storedBucket.Details, &storedDetails); err == nil {
-			// Check if the details contain metadata fields (not just basic bucket info)
-			if _, hasMetadata := storedDetails["VersioningEnabled"]; hasMetadata {
+		// Deserialize stored details into BucketDetails
+		var details models.BucketDetails
+		if err := json.Unmarshal(storedBucket.Details, &details); err == nil {
+			// Check if the details contain metadata (not just basic bucket info)
+			if details.HasMetadata() {
 				slog.Info("Loading bucket metadata from storage", slog.String("bucket", bucketName))
 
-				// Convert stored details to BucketMetadata
-				metadata := &s3client.BucketMetadata{}
-				if v, ok := storedDetails["VersioningEnabled"].(bool); ok {
-					metadata.VersioningEnabled = v
-				}
-				if v, ok := storedDetails["VersioningStatus"].(string); ok {
-					metadata.VersioningStatus = v
-				}
-				if v, ok := storedDetails["ObjectLockEnabled"].(bool); ok {
-					metadata.ObjectLockEnabled = v
-				}
-				if v, ok := storedDetails["ObjectLockMode"].(string); ok {
-					metadata.ObjectLockMode = v
-				}
-				if v, ok := storedDetails["RetentionEnabled"].(bool); ok {
-					metadata.RetentionEnabled = v
-				}
-				if v, ok := storedDetails["RetentionDays"].(float64); ok {
-					metadata.RetentionDays = int32(v)
-				}
-				if v, ok := storedDetails["RetentionYears"].(float64); ok {
-					metadata.RetentionYears = int32(v)
-				}
-				if v, ok := storedDetails["RetentionMode"].(string); ok {
-					metadata.RetentionMode = v
-				}
-
+				// Convert to BucketMetadata
+				metadata := details.ToMetadata()
 				a.treeData.bucketMetadata[bucketName] = metadata
 				a.fyneApp.Driver().DoFromGoroutine(func() {
 					a.tree.Refresh()
@@ -526,27 +499,18 @@ func (a *App) loadBucketMetadata(bucketName string) {
 
 	a.treeData.bucketMetadata[bucketName] = metadata
 
-	// Store the metadata in storage
-	var creationDate time.Time
-	for _, bucket := range a.treeData.buckets {
-		if bucket.Name == bucketName {
-			creationDate = bucket.CreationDate
+	// Find the bucket to get its creation date
+	var bucket models.Bucket
+	for _, b := range a.treeData.buckets {
+		if b.Name == bucketName {
+			bucket = b
 			break
 		}
 	}
 
-	bucketData := map[string]any{
-		"Name":              bucketName,
-		"VersioningEnabled": metadata.VersioningEnabled,
-		"VersioningStatus":  metadata.VersioningStatus,
-		"ObjectLockEnabled": metadata.ObjectLockEnabled,
-		"ObjectLockMode":    metadata.ObjectLockMode,
-		"RetentionEnabled":  metadata.RetentionEnabled,
-		"RetentionDays":     metadata.RetentionDays,
-		"RetentionYears":    metadata.RetentionYears,
-		"RetentionMode":     metadata.RetentionMode,
-	}
-	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, creationDate, bucketData); err != nil {
+	// Store the metadata in storage using BucketDetails
+	details := models.NewBucketDetails(bucket, metadata)
+	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucket.CreationDate, details); err != nil {
 		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
 	}
 

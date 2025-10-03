@@ -9,6 +9,8 @@ import (
 
 	"github.com/goccy/go-json"
 	_ "modernc.org/sqlite" // CGO-free SQLite driver
+
+	"github.com/vgarvardt/stree/pkg/models"
 )
 
 // Storage manages the SQLite database for caching S3 data
@@ -192,7 +194,7 @@ func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, e
 }
 
 // UpsertBucket creates or updates a bucket
-func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate time.Time, details any) error {
+func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate time.Time, details models.BucketDetails) error {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return fmt.Errorf("failed to marshal bucket details: %w", err)

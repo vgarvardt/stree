@@ -15,6 +15,8 @@ import (
 	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go/logging"
 	"github.com/cappuccinotm/slogx"
+
+	"github.com/vgarvardt/stree/pkg/models"
 )
 
 // ClientLogModeDebug is a combination of all logging modes for debugging purposes
@@ -31,32 +33,6 @@ const ClientLogModeDebug = aws.LogSigning |
 // Client wraps the AWS S3 client
 type Client struct {
 	s3Client *s3.Client
-}
-
-// Bucket represents an S3 bucket
-type Bucket struct {
-	Name         string
-	CreationDate time.Time
-}
-
-// BucketMetadata represents S3 bucket metadata and configuration
-type BucketMetadata struct {
-	VersioningEnabled bool
-	VersioningStatus  string
-	ObjectLockEnabled bool
-	ObjectLockMode    string
-	RetentionEnabled  bool
-	RetentionDays     int32
-	RetentionYears    int32
-	RetentionMode     string
-}
-
-// Object represents an S3 object
-type Object struct {
-	Key          string
-	Size         int64
-	IsPrefix     bool
-	LastModified *string
 }
 
 // Config wraps AWS S3 client options
@@ -159,8 +135,8 @@ func NewClient(ctx context.Context, cfg Config, version string) (*Client, error)
 }
 
 // GetBucketMetadata retrieves bucket metadata including versioning, lock, and retention settings
-func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*BucketMetadata, error) {
-	metadata := &BucketMetadata{}
+func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*models.BucketMetadata, error) {
+	metadata := &models.BucketMetadata{}
 
 	// Get versioning status
 	versioningOutput, err := c.s3Client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
@@ -198,15 +174,15 @@ func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*Buc
 }
 
 // ListBuckets returns all S3 buckets
-func (c *Client) ListBuckets(ctx context.Context) ([]Bucket, error) {
+func (c *Client) ListBuckets(ctx context.Context) ([]models.Bucket, error) {
 	output, err := c.s3Client.ListBuckets(ctx, &s3.ListBucketsInput{})
 	if err != nil {
 		return nil, err
 	}
 
-	buckets := make([]Bucket, 0, len(output.Buckets))
+	buckets := make([]models.Bucket, 0, len(output.Buckets))
 	for _, b := range output.Buckets {
-		bucket := Bucket{
+		bucket := models.Bucket{
 			Name: aws.ToString(b.Name),
 		}
 		bucket.CreationDate = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC) // Default to Unix epoch start
@@ -220,7 +196,7 @@ func (c *Client) ListBuckets(ctx context.Context) ([]Bucket, error) {
 }
 
 // ListObjects returns top-level objects in a bucket
-func (c *Client) ListObjects(ctx context.Context, bucketName string) ([]Object, error) {
+func (c *Client) ListObjects(ctx context.Context, bucketName string) ([]models.Object, error) {
 	output, err := c.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(bucketName),
 		Delimiter: aws.String("/"),
@@ -230,11 +206,11 @@ func (c *Client) ListObjects(ctx context.Context, bucketName string) ([]Object, 
 		return nil, err
 	}
 
-	objects := make([]Object, 0)
+	objects := make([]models.Object, 0)
 
 	// Add common prefixes (folders)
 	for _, prefix := range output.CommonPrefixes {
-		objects = append(objects, Object{
+		objects = append(objects, models.Object{
 			Key:      aws.ToString(prefix.Prefix),
 			IsPrefix: true,
 			Size:     0,
@@ -249,7 +225,7 @@ func (c *Client) ListObjects(ctx context.Context, bucketName string) ([]Object, 
 			continue
 		}
 
-		object := Object{
+		object := models.Object{
 			Key:      key,
 			Size:     aws.ToInt64(obj.Size),
 			IsPrefix: false,
@@ -265,7 +241,7 @@ func (c *Client) ListObjects(ctx context.Context, bucketName string) ([]Object, 
 }
 
 // GetObjectType returns a simple categorization of the object
-func GetObjectType(obj Object) string {
+func GetObjectType(obj models.Object) string {
 	if obj.IsPrefix {
 		return "folder"
 	}
