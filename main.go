@@ -9,6 +9,8 @@ import (
 	"github.com/cappuccinotm/slogx"
 	"github.com/cappuccinotm/slogx/slogm"
 	"github.com/spf13/cobra"
+
+	"github.com/vgarvardt/stree/gui"
 )
 
 var (
@@ -24,8 +26,14 @@ func main() {
 		Version: fmt.Sprintf("%s (built %s)", version, built),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := buildLogger(verboseLogs)
+			slog.SetDefault(logger)
+
 			logger.Info("Starting main GUI app", slog.String("version", version), slog.String("built", built))
-			return nil
+
+			// Launch the GUI application
+			app := gui.NewApp(version)
+
+			return app.Run(cmd.Context(), verboseLogs)
 		},
 	}
 

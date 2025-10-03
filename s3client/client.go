@@ -1,0 +1,233 @@
+package s3client
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	awsCredentials "github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go/logging"
+)
+
+// ClientLogModeDebug is a combination of all logging modes for debugging purposes
+const ClientLogModeDebug = aws.LogSigning |
+	aws.LogRetries |
+	aws.LogRequest |
+	aws.LogRequestWithBody |
+	aws.LogResponse |
+	aws.LogResponseWithBody |
+	aws.LogDeprecatedUsage |
+	aws.LogRequestEventMessage |
+	aws.LogResponseEventMessage
+
+// Client wraps the AWS S3 client
+type Client struct {
+	s3Client *s3.Client
+}
+
+// Bucket represents an S3 bucket
+type Bucket struct {
+	Name         string
+	CreationDate *string
+}
+
+// Object represents an S3 object
+type Object struct {
+	Key          string
+	Size         int64
+	IsPrefix     bool
+	LastModified *string
+}
+
+// Config wraps AWS S3 client options
+type Config struct {
+	Endpoint     string
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
+	Region       string
+	RetryMode    aws.RetryMode
+
+	Debug bool
+}
+
+// UseSSL returns true if the endpoint is using SSL
+func (cfg Config) UseSSL() bool {
+	return strings.HasPrefix(cfg.Endpoint, "https://")
+}
+
+// EndpointHost returns the host part of the endpoint
+func (cfg Config) EndpointHost() string {
+	u, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		return "invalid-host"
+	}
+	return u.Host
+}
+
+// String returns simple string representation of the config values
+func (cfg Config) String() string {
+	secretKey := cfg.SecretKey
+	if secretKey != "" {
+		secretKey = cfg.SecretKey[0:3] + "XXX" + cfg.SecretKey[len(cfg.SecretKey)-3:]
+	}
+
+	return fmt.Sprintf(
+		"%s%s:%s@%s?region=%s",
+		map[bool]string{true: "https://", false: "http://"}[cfg.UseSSL()],
+		cfg.AccessKey,
+		secretKey,
+		cfg.EndpointHost(),
+		cfg.Region,
+	)
+}
+
+var logLevel = map[bool]slog.Level{true: slog.LevelDebug, false: slog.LevelInfo}
+
+// NewClient creates a new S3 client with static credentials
+func NewClient(ctx context.Context, cfg Config, version string) (*Client, error) {
+	slog.Info("Building new S3 client", slog.String("s3-client-url", cfg.String()))
+
+	var optFns []func(*config.LoadOptions) error
+
+	if cfg.Debug {
+		optFns = append(
+			optFns,
+			config.WithClientLogMode(ClientLogModeDebug),
+		)
+	}
+
+	configOptions := make([]func(*config.LoadOptions) error, 0, 5+len(optFns))
+	configOptions = append(configOptions,
+		config.WithRegion(cfg.Region),
+		config.WithCredentialsProvider(awsCredentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, cfg.SessionToken)),
+		config.WithLogger(logging.LoggerFunc(func(classification logging.Classification, format string, v ...any) {
+			switch classification {
+			case logging.Warn:
+				slog.Warn(fmt.Sprintf("[S3 Client WARN] "+format, v...))
+			case logging.Debug:
+				slog.Log(ctx, logLevel[cfg.Debug], fmt.Sprintf("[S3 CLient DEBUG] "+format, v...))
+			}
+		})),
+		config.WithAppID("STree/"+version),
+	)
+
+	switch cfg.RetryMode {
+	case "standard", "adaptive":
+		configOptions = append(configOptions, config.WithRetryMode(cfg.RetryMode))
+	case "nop", "":
+		configOptions = append(configOptions,
+			config.WithRetryer(func() aws.Retryer {
+				return aws.NopRetryer{}
+			}),
+		)
+	default:
+		return nil, fmt.Errorf("unknown RetryMode, %v", cfg.RetryMode)
+	}
+
+	awsCfg, err := config.LoadDefaultConfig(ctx, append(configOptions, optFns...)...)
+	if err != nil {
+		return nil, fmt.Errorf("could not build aws config: %w", err)
+	}
+
+	return &Client{
+		s3Client: s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+			o.BaseEndpoint = &cfg.Endpoint
+			o.UsePathStyle = true
+		}),
+	}, nil
+}
+
+// ListBuckets returns all S3 buckets
+func (c *Client) ListBuckets(ctx context.Context) ([]Bucket, error) {
+	output, err := c.s3Client.ListBuckets(ctx, &s3.ListBucketsInput{})
+	if err != nil {
+		return nil, err
+	}
+
+	buckets := make([]Bucket, 0, len(output.Buckets))
+	for _, b := range output.Buckets {
+		bucket := Bucket{
+			Name: aws.ToString(b.Name),
+		}
+		if b.CreationDate != nil {
+			creationDate := b.CreationDate.String()
+			bucket.CreationDate = &creationDate
+		}
+		buckets = append(buckets, bucket)
+	}
+
+	return buckets, nil
+}
+
+// ListObjects returns top-level objects in a bucket
+func (c *Client) ListObjects(ctx context.Context, bucketName string) ([]Object, error) {
+	output, err := c.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:    aws.String(bucketName),
+		Delimiter: aws.String("/"),
+		MaxKeys:   aws.Int32(1000),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	objects := make([]Object, 0)
+
+	// Add common prefixes (folders)
+	for _, prefix := range output.CommonPrefixes {
+		objects = append(objects, Object{
+			Key:      aws.ToString(prefix.Prefix),
+			IsPrefix: true,
+			Size:     0,
+		})
+	}
+
+	// Add objects (files)
+	for _, obj := range output.Contents {
+		// Skip the bucket itself if it appears as an object
+		key := aws.ToString(obj.Key)
+		if key == "" || key == "/" {
+			continue
+		}
+
+		object := Object{
+			Key:      key,
+			Size:     aws.ToInt64(obj.Size),
+			IsPrefix: false,
+		}
+		if obj.LastModified != nil {
+			lastModified := obj.LastModified.String()
+			object.LastModified = &lastModified
+		}
+		objects = append(objects, object)
+	}
+
+	return objects, nil
+}
+
+// GetObjectType returns a simple categorization of the object
+func GetObjectType(obj Object) string {
+	if obj.IsPrefix {
+		return "folder"
+	}
+	return "file"
+}
+
+// FormatSize formats the size in a human-readable format
+func FormatSize(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
+}
