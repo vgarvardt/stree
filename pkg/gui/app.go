@@ -14,6 +14,7 @@ import (
 	"github.com/cappuccinotm/slogx"
 
 	"github.com/vgarvardt/stree/pkg/s3client"
+	"github.com/vgarvardt/stree/pkg/storage"
 )
 
 // TODO: These will be configurable later
@@ -33,8 +34,11 @@ type App struct {
 	statusBar *widget.Label
 	treeData  *TreeData
 
-	s3Client *s3client.Client
-	version  string
+	storage *storage.Storage
+	version string
+
+	s3Client  *s3client.Client
+	sessionID int64
 }
 
 // TreeData holds the hierarchical data for the tree widget
@@ -45,10 +49,11 @@ type TreeData struct {
 }
 
 // NewApp creates a new GUI application
-func NewApp(version string) *App {
+func NewApp(stor *storage.Storage, version string) *App {
 	return &App{
 		fyneApp: app.New(),
 		version: version,
+		storage: stor,
 		treeData: &TreeData{
 			buckets:        []s3client.Bucket{},
 			bucketMetadata: make(map[string]*s3client.BucketMetadata),
@@ -59,16 +64,21 @@ func NewApp(version string) *App {
 
 // Run starts the GUI application
 func (a *App) Run(ctx context.Context, verbose bool) error {
-	s3Client, err := s3client.NewClient(ctx, s3client.Config{
+	s3Cfg := s3client.Config{
 		Endpoint:     s3Endpoint,
 		AccessKey:    s3AccessKeyID,
 		SecretKey:    s3SecretKey,
 		SessionToken: s3SessionToken,
 		Region:       s3Region,
 		Debug:        verbose,
-	}, a.version)
+	}
+	s3Client, err := s3client.NewClient(ctx, s3Cfg, a.version)
 	if err != nil {
 		return fmt.Errorf("failed to create S3 client: %w", err)
+	}
+
+	if a.sessionID, err = a.storage.UpsertSession(ctx, s3Cfg.String()); err != nil {
+		return fmt.Errorf("failed to store session to storage: %w", err)
 	}
 
 	a.s3Client = s3Client

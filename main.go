@@ -11,6 +11,7 @@ import (
 
 	"github.com/vgarvardt/stree/pkg/gui"
 	"github.com/vgarvardt/stree/pkg/logging"
+	"github.com/vgarvardt/stree/pkg/storage"
 )
 
 var (
@@ -25,15 +26,22 @@ func main() {
 		Use:     "stree [command]",
 		Version: fmt.Sprintf("%s (built %s)", version, built),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
 			logger := logging.BuildLogger(verboseLogs)
 			slog.SetDefault(logger)
+
+			stor, err := storage.New(ctx)
+			if err != nil {
+				return fmt.Errorf("could not initialize storage: %w", err)
+			}
 
 			logger.Info("Starting main GUI app", slog.String("version", version), slog.String("built", built))
 
 			// Launch the GUI application
 			app := gui.NewApp(version)
 
-			return app.Run(cmd.Context(), verboseLogs)
+			return app.Run(ctx, verboseLogs)
 		},
 	}
 
