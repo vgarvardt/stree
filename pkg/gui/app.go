@@ -309,7 +309,9 @@ func (a *App) createTree() *widget.Tree {
 				icon := widget.NewIcon(theme.DocumentIcon())
 				label := widget.NewLabel("Template")
 				box := container.NewHBox(icon, label)
-				return box
+				// Wrap in TappableContainer to handle right-clicks on metadata items
+				tappable := NewTappableContainer(box, nil)
+				return tappable
 			}
 		},
 		// Update function
@@ -358,7 +360,8 @@ func (a *App) createTree() *widget.Tree {
 
 			// Handle metadata nodes (leaves) - these have icon + label
 			if strings.HasPrefix(uid, uidPrefixMeta) {
-				c := obj.(*fyne.Container)
+				tappable := obj.(*TappableContainer)
+				c := tappable.container
 				icon := c.Objects[0].(*widget.Icon)
 				label := c.Objects[1].(*widget.Label)
 
@@ -374,6 +377,7 @@ func (a *App) createTree() *widget.Tree {
 				if lastColon == -1 {
 					label.SetText("Unknown")
 					icon.SetResource(theme.QuestionIcon())
+					tappable.onSecondaryTap = nil
 					return
 				}
 
@@ -384,6 +388,7 @@ func (a *App) createTree() *widget.Tree {
 				if !exists {
 					label.SetText("Loading...")
 					icon.SetResource(theme.InfoIcon())
+					tappable.onSecondaryTap = nil
 					return
 				}
 
@@ -393,11 +398,13 @@ func (a *App) createTree() *widget.Tree {
 						if bucket.Name == bucketName {
 							label.SetText("Created: " + bucket.CreationDate.Format(time.RFC3339))
 							icon.SetResource(theme.HistoryIcon())
+							tappable.onSecondaryTap = nil
 							return
 						}
 					}
 					label.SetText("Created: Unknown")
 					icon.SetResource(theme.HistoryIcon())
+					tappable.onSecondaryTap = nil
 				case "versioning":
 					status := "Disabled"
 					if metadata.VersioningEnabled {
@@ -411,6 +418,7 @@ func (a *App) createTree() *widget.Tree {
 					} else {
 						icon.SetResource(theme.CheckButtonIcon())
 					}
+					tappable.onSecondaryTap = nil
 				case "lock":
 					status := "Disabled"
 					if metadata.ObjectLockEnabled {
@@ -422,6 +430,7 @@ func (a *App) createTree() *widget.Tree {
 					} else {
 						icon.SetResource(theme.CancelIcon())
 					}
+					tappable.onSecondaryTap = nil
 				case "retention":
 					if metadata.RetentionEnabled {
 						if metadata.RetentionYears > 0 {
@@ -446,6 +455,7 @@ func (a *App) createTree() *widget.Tree {
 						label.SetText("Retention: Not configured")
 						icon.SetResource(theme.ContentRemoveIcon())
 					}
+					tappable.onSecondaryTap = nil
 				case "objects":
 					refreshedAt := "???"
 					if metadata.ObjectsRefreshedAt != nil {
@@ -453,9 +463,14 @@ func (a *App) createTree() *widget.Tree {
 					}
 					label.SetText(fmt.Sprintf("Objects: %s / %s @ %s", humanize.Comma(metadata.ObjectsCount), humanize.Bytes(uint64(metadata.ObjectsSize)), refreshedAt))
 					icon.SetResource(theme.StorageIcon())
+					// Set right-click handler for objects metadata
+					tappable.onSecondaryTap = func(position fyne.Position) {
+						a.showObjectsContextMenu(bucketName, metadata, position)
+					}
 				default:
 					label.SetText("Unknown field")
 					icon.SetResource(theme.QuestionIcon())
+					tappable.onSecondaryTap = nil
 				}
 			}
 		},
@@ -521,6 +536,62 @@ func (a *App) showBucketContextMenu(bucketName string, position fyne.Position) {
 
 	// Create and show the popup menu
 	menu := fyne.NewMenu("", copyNameItem, refreshItem)
+	popUpMenu := widget.NewPopUpMenu(menu, a.window.Canvas())
+	popUpMenu.ShowAtPosition(position)
+}
+
+// showObjectsContextMenu displays a context menu for the objects metadata
+func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketMetadata, position fyne.Position) {
+	// Create menu items for copying objects count
+	copyObjectsAsIsItem := fyne.NewMenuItem("Copy objects as is", func() {
+		objectsCount := fmt.Sprintf("%d", metadata.ObjectsCount)
+		a.window.Clipboard().SetContent(objectsCount)
+		slog.Info("Copied objects count to clipboard", slog.String("bucket", bucketName), slog.Int64("count", metadata.ObjectsCount))
+		a.statusBar.SetText(fmt.Sprintf("Copied objects count: %s", objectsCount))
+	})
+	copyObjectsAsIsItem.Icon = theme.ContentCopyIcon()
+
+	copyObjectsFormattedItem := fyne.NewMenuItem("Copy objects formatted", func() {
+		objectsCount := humanize.Comma(metadata.ObjectsCount)
+		a.window.Clipboard().SetContent(objectsCount)
+		slog.Info("Copied formatted objects count to clipboard", slog.String("bucket", bucketName), slog.Int64("count", metadata.ObjectsCount))
+		a.statusBar.SetText(fmt.Sprintf("Copied objects count: %s", objectsCount))
+	})
+	copyObjectsFormattedItem.Icon = theme.ContentCopyIcon()
+
+	// Create menu items for copying size
+	copySizeAsIsItem := fyne.NewMenuItem("Copy size as is", func() {
+		size := fmt.Sprintf("%d", metadata.ObjectsSize)
+		a.window.Clipboard().SetContent(size)
+		slog.Info("Copied size to clipboard", slog.String("bucket", bucketName), slog.Int64("size", metadata.ObjectsSize))
+		a.statusBar.SetText(fmt.Sprintf("Copied size: %s bytes", size))
+	})
+	copySizeAsIsItem.Icon = theme.ContentCopyIcon()
+
+	copySizeFormattedItem := fyne.NewMenuItem("Copy size formatted", func() {
+		size := humanize.Bytes(uint64(metadata.ObjectsSize))
+		a.window.Clipboard().SetContent(size)
+		slog.Info("Copied formatted size to clipboard", slog.String("bucket", bucketName), slog.Int64("size", metadata.ObjectsSize))
+		a.statusBar.SetText(fmt.Sprintf("Copied size: %s", size))
+	})
+	copySizeFormattedItem.Icon = theme.ContentCopyIcon()
+
+	// Create refresh item (dummy handler for now)
+	refreshItem := fyne.NewMenuItem("Refresh", func() {
+		slog.Info("Refresh objects metadata requested (not yet implemented)", slog.String("bucket", bucketName))
+		a.statusBar.SetText("Refresh objects: coming soon...")
+	})
+	refreshItem.Icon = theme.ViewRefreshIcon()
+
+	// Create and show the popup menu with separator
+	menu := fyne.NewMenu("",
+		copyObjectsAsIsItem,
+		copyObjectsFormattedItem,
+		copySizeAsIsItem,
+		copySizeFormattedItem,
+		fyne.NewMenuItemSeparator(),
+		refreshItem,
+	)
 	popUpMenu := widget.NewPopUpMenu(menu, a.window.Canvas())
 	popUpMenu.ShowAtPosition(position)
 }
