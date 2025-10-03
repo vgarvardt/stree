@@ -296,11 +296,13 @@ func (a *App) createTree() *widget.Tree {
 		// Create function
 		func(branch bool) fyne.CanvasObject {
 			if branch {
-				// For branches (buckets), only create a label
-				// The folder icon (open/closed) will be provided by the tree widget itself
+				// For branches (buckets), create icon + label
+				// The icon will be updated to show open/closed folder state
+				icon := widget.NewIcon(theme.FolderIcon())
 				label := widget.NewLabel("Template")
+				box := container.NewHBox(icon, label)
 				// Wrap in TappableContainer to handle right-clicks
-				tappable := NewTappableContainer(container.NewWithoutLayout(label), nil)
+				tappable := NewTappableContainer(box, nil)
 				return tappable
 			} else {
 				// For leaves (metadata items), create icon + label
@@ -315,8 +317,11 @@ func (a *App) createTree() *widget.Tree {
 			if uid == "" {
 				// Root node
 				if tappable, ok := obj.(*TappableContainer); ok {
-					label := tappable.container.Objects[0].(*widget.Label)
+					c := tappable.container
+					icon := c.Objects[0].(*widget.Icon)
+					label := c.Objects[1].(*widget.Label)
 					label.SetText("Root")
+					icon.SetResource(theme.FolderIcon())
 					tappable.onSecondaryTap = nil
 				}
 				return
@@ -325,13 +330,23 @@ func (a *App) createTree() *widget.Tree {
 			// Handle bucket nodes (branches)
 			if strings.HasPrefix(uid, uidPrefixBucket) {
 				tappable := obj.(*TappableContainer)
-				label := tappable.container.Objects[0].(*widget.Label)
+				c := tappable.container
+				icon := c.Objects[0].(*widget.Icon)
+				label := c.Objects[1].(*widget.Label)
 
 				bucketName := uid[len(uidPrefixBucket):]
 				for _, bucket := range a.treeData.buckets {
 					if bucket.Name == bucketName {
 						label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
 					}
+				}
+
+				// Update folder icon based on branch open/closed state
+				bucketUID := uidPrefixBucket + bucketName
+				if a.tree.IsBranchOpen(bucketUID) {
+					icon.SetResource(theme.FolderOpenIcon())
+				} else {
+					icon.SetResource(theme.FolderIcon())
 				}
 
 				// Set right-click handler for bucket nodes
