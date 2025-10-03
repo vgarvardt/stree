@@ -576,10 +576,9 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 	})
 	copySizeFormattedItem.Icon = theme.ContentCopyIcon()
 
-	// Create refresh item (dummy handler for now)
+	// Create refresh item - now with actual implementation
 	refreshItem := fyne.NewMenuItem("Refresh", func() {
-		slog.Info("Refresh objects metadata requested (not yet implemented)", slog.String("bucket", bucketName))
-		a.statusBar.SetText("Refresh objects: coming soon...")
+		go a.refreshObjectsMetadata(bucketName)
 	})
 	refreshItem.Icon = theme.ViewRefreshIcon()
 
@@ -614,6 +613,145 @@ func (a *App) refreshSingleBucket(bucketName string) {
 
 	// Reload bucket metadata from S3
 	a.loadBucketMetadata(bucketName)
+}
+
+// refreshObjectsMetadata refreshes object versions data for a bucket
+func (a *App) refreshObjectsMetadata(bucketName string) {
+	startedAt := time.Now()
+
+	slog.Info("Refreshing objects metadata", slog.String("bucket", bucketName))
+
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText(fmt.Sprintf("Refreshing objects for %s...", bucketName))
+	}, false)
+
+	// Get the bucket from storage to get its ID
+	storedBucket, err := a.storage.GetBucket(a.ctx, a.sessionID, bucketName)
+	if err != nil {
+		slog.Error("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: Failed to get bucket from storage"))
+		}, false)
+		return
+	}
+
+	if storedBucket == nil {
+		slog.Error("Bucket not found in storage", slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: Bucket not found"))
+		}, false)
+		return
+	}
+
+	// Delete all existing objects for this bucket
+	if err := a.storage.DeleteObjectsByBucket(a.ctx, storedBucket.ID); err != nil {
+		slog.Error("Failed to delete existing objects", slogx.Error(err), slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: Failed to delete existing objects"))
+		}, false)
+		return
+	}
+
+	slog.Info("Deleted existing objects from storage", slog.String("bucket", bucketName))
+
+	// Fetch all object versions from S3
+	versions, err := a.s3Client.ListObjectVersions(a.ctx, bucketName)
+	if err != nil {
+		slog.Error("Failed to list object versions", slogx.Error(err), slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: Failed to list object versions"))
+		}, false)
+		return
+	}
+
+	slog.Info("Fetched object versions from S3", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
+
+	// Insert object versions into storage
+	if err := a.storage.BulkInsertObjectVersions(a.ctx, storedBucket.ID, versions); err != nil {
+		slog.Error("Failed to insert object versions", slogx.Error(err), slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: Failed to store object versions"))
+		}, false)
+		return
+	}
+
+	slog.Info("Stored object versions in storage", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
+
+	// Calculate aggregates
+	var totalCount int64
+	var totalSize int64
+	var latestVersionCount int64
+	var latestVersionSize int64
+	var deleteMarkerCount int64
+
+	for _, version := range versions {
+		totalCount++
+
+		if version.IsDeleteMarker {
+			deleteMarkerCount++
+		} else {
+			totalSize += version.Size
+
+			if version.IsLatest {
+				latestVersionCount++
+				latestVersionSize += version.Size
+			}
+		}
+	}
+
+	slog.Info("Calculated aggregates",
+		slog.String("bucket", bucketName),
+		slog.Int64("total-count", totalCount),
+		slog.Int64("total-size", totalSize),
+		slog.Int64("latest-version-count", latestVersionCount),
+		slog.Int64("latest-version-size", latestVersionSize),
+		slog.Int64("delete-marker-count", deleteMarkerCount),
+	)
+
+	// Update metadata in storage
+	metadata, exists := a.treeData.bucketMetadata[bucketName]
+	if !exists {
+		slog.Warn("Bucket metadata not found in tree data", slog.String("bucket", bucketName))
+		metadata = &models.BucketMetadata{}
+		a.treeData.bucketMetadata[bucketName] = metadata
+	}
+
+	// Update the metadata with new aggregates
+	now := time.Now()
+	metadata.ObjectsRefreshedAt = &now
+	metadata.ObjectsCount = latestVersionCount
+	metadata.ObjectsSize = latestVersionSize
+
+	// Find the bucket to get its creation date
+	var bucket models.Bucket
+	for _, b := range a.treeData.buckets {
+		if b.Name == bucketName {
+			bucket = b
+			break
+		}
+	}
+
+	// Store the updated metadata in storage
+	details := models.NewBucketDetails(bucket, metadata)
+	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucket.CreationDate, details); err != nil {
+		slog.Error("Failed to update bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: Failed to update metadata"))
+		}, false)
+		return
+	}
+
+	slog.Info("Updated bucket metadata", slog.String("bucket", bucketName), slog.Duration("elapsed", time.Since(startedAt)))
+
+	// Refresh tree on UI thread
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.tree.Refresh()
+		a.statusBar.SetText(fmt.Sprintf("Refreshed objects for %s: %s objects, %s",
+			bucketName,
+			humanize.Comma(latestVersionCount),
+			humanize.Bytes(uint64(latestVersionSize)),
+		))
+	}, false)
 }
 
 // loadBuckets loads the list of S3 buckets

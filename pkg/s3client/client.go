@@ -261,3 +261,63 @@ func FormatSize(size int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
 }
+
+// ListObjectVersions lists all object versions in a bucket (including delete markers)
+func (c *Client) ListObjectVersions(ctx context.Context, bucketName string) ([]models.ObjectVersion, error) {
+	var versions []models.ObjectVersion
+	var keyMarker *string
+	var versionIDMarker *string
+
+	for {
+		input := &s3.ListObjectVersionsInput{
+			Bucket:          aws.String(bucketName),
+			KeyMarker:       keyMarker,
+			VersionIdMarker: versionIDMarker,
+			MaxKeys:         aws.Int32(1000),
+		}
+
+		output, err := c.s3Client.ListObjectVersions(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list object versions: %w", err)
+		}
+
+		// Process object versions
+		for _, ver := range output.Versions {
+			version := models.ObjectVersion{
+				Key:            aws.ToString(ver.Key),
+				VersionID:      aws.ToString(ver.VersionId),
+				IsLatest:       aws.ToBool(ver.IsLatest),
+				Size:           aws.ToInt64(ver.Size),
+				LastModified:   aws.ToTime(ver.LastModified),
+				IsDeleteMarker: false,
+				ETag:           aws.ToString(ver.ETag),
+				StorageClass:   string(ver.StorageClass),
+			}
+			versions = append(versions, version)
+		}
+
+		// Process delete markers
+		for _, dm := range output.DeleteMarkers {
+			version := models.ObjectVersion{
+				Key:            aws.ToString(dm.Key),
+				VersionID:      aws.ToString(dm.VersionId),
+				IsLatest:       aws.ToBool(dm.IsLatest),
+				Size:           0,
+				LastModified:   aws.ToTime(dm.LastModified),
+				IsDeleteMarker: true,
+			}
+			versions = append(versions, version)
+		}
+
+		// Check if there are more results
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+
+		keyMarker = output.NextKeyMarker
+		versionIDMarker = output.NextVersionIdMarker
+	}
+
+	slog.Info("Listed object versions", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
+	return versions, nil
+}

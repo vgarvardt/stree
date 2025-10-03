@@ -339,6 +339,47 @@ func (s *Storage) GetObjectsByBucket(ctx context.Context, bucketID int64) ([]Obj
 	return objects, nil
 }
 
+// DeleteObjectsByBucket deletes all objects for a specific bucket
+func (s *Storage) DeleteObjectsByBucket(ctx context.Context, bucketID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM objects WHERE bucket_id = ?`, bucketID)
+	if err != nil {
+		return fmt.Errorf("failed to delete objects: %w", err)
+	}
+	return nil
+}
+
+// BulkInsertObjectVersions inserts multiple object versions in a single transaction
+func (s *Storage) BulkInsertObjectVersions(ctx context.Context, bucketID int64, versions []models.ObjectVersion) error {
+	if len(versions) == 0 {
+		return nil
+	}
+
+	return transactional(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx,
+			`INSERT INTO objects (bucket_id, properties, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to prepare statement: %w", err)
+		}
+		defer stmt.Close()
+
+		now := time.Now()
+		for _, version := range versions {
+			propertiesJSON, err := json.Marshal(version)
+			if err != nil {
+				return fmt.Errorf("failed to marshal object version: %w", err)
+			}
+
+			_, err = stmt.ExecContext(ctx, bucketID, propertiesJSON, now, now)
+			if err != nil {
+				return fmt.Errorf("failed to insert object version: %w", err)
+			}
+		}
+
+		return nil
+	})
+}
+
 // InvalidateSession deletes a session and all associated data (cascades to buckets and objects),
 // creates a new session with the same config string, and returns the new session ID.
 func (s *Storage) InvalidateSession(ctx context.Context, sessionID int64) (int64, error) {
