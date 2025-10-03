@@ -173,17 +173,7 @@ func (a *App) createTree() *widget.Tree {
 			// Handle bucket nodes
 			if len(uid) > 7 && uid[:7] == "bucket:" {
 				bucketName := uid[7:]
-				// Find the bucket to show creation date
-				var creationDate string
-				for _, bucket := range a.treeData.buckets {
-					if bucket.Name == bucketName {
-						if bucket.CreationDate != nil {
-							creationDate = " (" + *bucket.CreationDate + ")"
-						}
-						break
-					}
-				}
-				label.SetText(bucketName + creationDate)
+				label.SetText(bucketName)
 				icon.SetResource(theme.FolderIcon())
 				return
 			}
