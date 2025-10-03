@@ -73,6 +73,12 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 	a.window = a.fyneApp.NewWindow("S3 Tree Browser")
 	a.window.Resize(fyne.NewSize(800, 600))
 
+	// Create top toolbar with refresh button (icon-only)
+	refreshButton := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
+		go a.refreshBuckets()
+	})
+	toolbar := container.NewHBox(refreshButton)
+
 	// Create status bar
 	a.statusBar = widget.NewLabel("Ready")
 	statusContainer := container.NewBorder(nil, nil, widget.NewIcon(theme.InfoIcon()), nil, a.statusBar)
@@ -82,7 +88,7 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 
 	// Create main content with scrolling
 	content := container.NewBorder(
-		nil,                         // top
+		toolbar,                     // top
 		statusContainer,             // bottom
 		nil,                         // left
 		nil,                         // right
@@ -216,6 +222,17 @@ func (a *App) createTree() *widget.Tree {
 	}
 
 	return tree
+}
+
+// refreshBuckets clears cached data and reloads the buckets list
+func (a *App) refreshBuckets() {
+	slog.Info("Refreshing S3 buckets")
+
+	// Clear cached bucket data
+	a.treeData.bucketData = make(map[string][]s3client.Object)
+
+	// Reload buckets
+	a.loadBuckets()
 }
 
 // loadBuckets loads the list of S3 buckets
