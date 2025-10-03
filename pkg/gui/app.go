@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -256,7 +257,7 @@ func (a *App) createTree() *widget.Tree {
 				case "created":
 					for _, bucket := range a.treeData.buckets {
 						if bucket.Name == bucketName && bucket.CreationDate != nil {
-							label.SetText("Created: " + *bucket.CreationDate)
+							label.SetText("Created: " + bucket.CreationDate.Format(time.RFC3339))
 							icon.SetResource(theme.HistoryIcon())
 							return
 						}
@@ -368,7 +369,7 @@ func (a *App) loadBuckets() {
 			"Name":         bucket.Name,
 			"CreationDate": bucket.CreationDate,
 		}
-		if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucket.Name, bucketData); err != nil {
+		if err := a.storage.UpsertBucket(context.TODO(), a.sessionID, bucket.Name, bucket.CreationDate, bucketData); err != nil {
 			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", bucket.Name))
 		}
 	}
@@ -453,6 +454,14 @@ func (a *App) loadBucketMetadata(bucketName string) {
 	a.treeData.bucketMetadata[bucketName] = metadata
 
 	// Store the metadata in storage
+	var creationDate *time.Time
+	for _, bucket := range a.treeData.buckets {
+		if bucket.Name == bucketName {
+			creationDate = bucket.CreationDate
+			break
+		}
+	}
+
 	bucketData := map[string]any{
 		"Name":              bucketName,
 		"VersioningEnabled": metadata.VersioningEnabled,
@@ -464,7 +473,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 		"RetentionYears":    metadata.RetentionYears,
 		"RetentionMode":     metadata.RetentionMode,
 	}
-	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucketData); err != nil {
+	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, creationDate, bucketData); err != nil {
 		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
 	}
 

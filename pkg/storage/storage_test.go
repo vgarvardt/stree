@@ -43,7 +43,8 @@ func TestStorage(t *testing.T) {
 		"VersioningEnabled": true,
 		"ObjectLockEnabled": false,
 	}
-	err = store.UpsertBucket(ctx, sessionID, "test-bucket", bucketDetails)
+	creationDate := time.Now()
+	err = store.UpsertBucket(ctx, sessionID, "test-bucket", &creationDate, bucketDetails)
 	require.NoError(t, err, "Failed to upsert bucket")
 
 	// Test bucket retrieval
@@ -51,6 +52,7 @@ func TestStorage(t *testing.T) {
 	require.NoError(t, err, "Failed to get bucket")
 	require.NotNil(t, bucket, "Expected bucket to exist")
 	assert.Equal(t, "test-bucket", bucket.Name, "Bucket name should match")
+	assert.NotNil(t, bucket.CreationDate, "Bucket creation date should not be nil")
 
 	// Verify bucket details JSON
 	var retrievedDetails map[string]any

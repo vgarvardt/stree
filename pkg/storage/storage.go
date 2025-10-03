@@ -26,12 +26,13 @@ type Session struct {
 
 // Bucket represents a cached S3 bucket
 type Bucket struct {
-	ID        int64
-	SessionID int64
-	Name      string
-	Details   json.RawMessage // JSON field for bucket metadata
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           int64
+	SessionID    int64
+	Name         string
+	CreationDate *time.Time      // Bucket creation date from S3
+	Details      json.RawMessage // JSON field for bucket metadata
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Object represents a cached S3 object
@@ -91,6 +92,7 @@ func (s *Storage) initSchema(ctx context.Context) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id INTEGER NOT NULL,
 		name TEXT NOT NULL,
+		creation_date DATETIME, -- Bucket creation date from S3
 		details TEXT NOT NULL, -- JSON field
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -100,6 +102,7 @@ func (s *Storage) initSchema(ctx context.Context) error {
 
 	CREATE INDEX IF NOT EXISTS idx_buckets_session_id ON buckets(session_id);
 	CREATE INDEX IF NOT EXISTS idx_buckets_name ON buckets(name);
+	CREATE INDEX IF NOT EXISTS idx_buckets_creation_date ON buckets(creation_date);
 
 	CREATE TABLE IF NOT EXISTS objects (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,7 +192,7 @@ func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, e
 }
 
 // UpsertBucket creates or updates a bucket
-func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, details any) error {
+func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate *time.Time, details any) error {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return fmt.Errorf("failed to marshal bucket details: %w", err)
@@ -199,8 +202,8 @@ func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string
 
 	// Try to update existing bucket
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE buckets SET details = ?, updated_at = ? WHERE session_id = ? AND name = ?`,
-		detailsJSON, now, sessionID, name,
+		`UPDATE buckets SET details = ?, updated_at = ?, creation_date = ? WHERE session_id = ? AND name = ?`,
+		detailsJSON, now, creationDate, sessionID, name,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update bucket: %w", err)
@@ -217,8 +220,8 @@ func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string
 
 	// Insert new bucket
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO buckets (session_id, name, details, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		sessionID, name, detailsJSON, now, now,
+		`INSERT INTO buckets (session_id, name, creation_date, details, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, name, creationDate, detailsJSON, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert bucket: %w", err)
@@ -230,7 +233,7 @@ func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string
 // GetBucketsBySession retrieves all buckets for a session
 func (s *Storage) GetBucketsBySession(ctx context.Context, sessionID int64) ([]Bucket, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, name, details, created_at, updated_at FROM buckets WHERE session_id = ? ORDER BY name`,
+		`SELECT id, session_id, name, creation_date, details, created_at, updated_at FROM buckets WHERE session_id = ? ORDER BY name`,
 		sessionID,
 	)
 	if err != nil {
@@ -241,7 +244,7 @@ func (s *Storage) GetBucketsBySession(ctx context.Context, sessionID int64) ([]B
 	var buckets []Bucket
 	for rows.Next() {
 		var bucket Bucket
-		if err := rows.Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.Details, &bucket.CreatedAt, &bucket.UpdatedAt); err != nil {
+		if err := rows.Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.CreationDate, &bucket.Details, &bucket.CreatedAt, &bucket.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan bucket: %w", err)
 		}
 		buckets = append(buckets, bucket)
@@ -258,9 +261,9 @@ func (s *Storage) GetBucketsBySession(ctx context.Context, sessionID int64) ([]B
 func (s *Storage) GetBucket(ctx context.Context, sessionID int64, name string) (*Bucket, error) {
 	var bucket Bucket
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, session_id, name, details, created_at, updated_at FROM buckets WHERE session_id = ? AND name = ?`,
+		`SELECT id, session_id, name, creation_date, details, created_at, updated_at FROM buckets WHERE session_id = ? AND name = ?`,
 		sessionID, name,
-	).Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.Details, &bucket.CreatedAt, &bucket.UpdatedAt)
+	).Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.CreationDate, &bucket.Details, &bucket.CreatedAt, &bucket.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil

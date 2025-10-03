@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -35,7 +36,7 @@ type Client struct {
 // Bucket represents an S3 bucket
 type Bucket struct {
 	Name         string
-	CreationDate *string
+	CreationDate *time.Time
 }
 
 // BucketMetadata represents S3 bucket metadata and configuration
@@ -209,8 +210,7 @@ func (c *Client) ListBuckets(ctx context.Context) ([]Bucket, error) {
 			Name: aws.ToString(b.Name),
 		}
 		if b.CreationDate != nil {
-			creationDate := b.CreationDate.String()
-			bucket.CreationDate = &creationDate
+			bucket.CreationDate = b.CreationDate
 		}
 		buckets = append(buckets, bucket)
 	}
