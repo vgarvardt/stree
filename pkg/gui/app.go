@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -40,6 +41,7 @@ type App struct {
 type TreeData struct {
 	buckets        []s3client.Bucket
 	bucketMetadata map[string]*s3client.BucketMetadata // bucketName -> metadata
+	searchFilter   string                              // search filter for bucket names
 }
 
 // NewApp creates a new GUI application
@@ -50,6 +52,7 @@ func NewApp(version string) *App {
 		treeData: &TreeData{
 			buckets:        []s3client.Bucket{},
 			bucketMetadata: make(map[string]*s3client.BucketMetadata),
+			searchFilter:   "",
 		},
 	}
 }
@@ -77,7 +80,22 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 	refreshButton := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
 		go a.refreshBuckets()
 	})
-	toolbar := container.NewHBox(refreshButton)
+
+	// Create search input
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder("Filter buckets...")
+	searchEntry.OnChanged = func(query string) {
+		a.treeData.searchFilter = query
+		a.tree.Refresh()
+	}
+
+	toolbar := container.NewBorder(
+		nil,           // top
+		nil,           // bottom
+		refreshButton, // left
+		searchEntry,   // right
+		nil,           // center
+	)
 
 	// Create status bar
 	a.statusBar = widget.NewLabel("Ready")
@@ -105,15 +123,32 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 	return nil
 }
 
+// getFilteredBuckets returns buckets filtered by the search query
+func (a *App) getFilteredBuckets() []s3client.Bucket {
+	if a.treeData.searchFilter == "" {
+		return a.treeData.buckets
+	}
+
+	filtered := make([]s3client.Bucket, 0)
+	for _, bucket := range a.treeData.buckets {
+		// Case-sensitive substring matching
+		if strings.Contains(bucket.Name, a.treeData.searchFilter) {
+			filtered = append(filtered, bucket)
+		}
+	}
+	return filtered
+}
+
 // createTree initializes the tree widget
 func (a *App) createTree() *widget.Tree {
 	tree := widget.NewTree(
 		// ChildUIDs function
 		func(uid string) []string {
 			if uid == "" {
-				// Root level - return bucket names
-				uids := make([]string, len(a.treeData.buckets))
-				for i, bucket := range a.treeData.buckets {
+				// Root level - return filtered bucket names
+				filteredBuckets := a.getFilteredBuckets()
+				uids := make([]string, len(filteredBuckets))
+				for i, bucket := range filteredBuckets {
 					uids[i] = "bucket:" + bucket.Name
 				}
 				return uids
