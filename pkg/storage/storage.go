@@ -274,6 +274,15 @@ func (s *Storage) GetBucket(ctx context.Context, sessionID int64, name string) (
 	return &bucket, nil
 }
 
+// DeleteBucket deletes a specific bucket and all associated objects (cascades)
+func (s *Storage) DeleteBucket(ctx context.Context, sessionID int64, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM buckets WHERE session_id = ? AND name = ?`, sessionID, name)
+	if err != nil {
+		return fmt.Errorf("failed to delete bucket: %w", err)
+	}
+	return nil
+}
+
 // UpsertObject creates or updates an object
 func (s *Storage) UpsertObject(ctx context.Context, bucketID int64, properties any) (int64, error) {
 	propertiesJSON, err := json.Marshal(properties)

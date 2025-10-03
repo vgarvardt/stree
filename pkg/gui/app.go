@@ -206,17 +206,24 @@ func (a *App) createTree() *widget.Tree {
 		func(branch bool) fyne.CanvasObject {
 			icon := widget.NewIcon(theme.DocumentIcon())
 			label := widget.NewLabel("Template")
-			return container.NewHBox(icon, label)
+			box := container.NewHBox(icon, label)
+
+			// Wrap in TappableContainer to handle right-clicks
+			// The onSecondaryTap callback will be set in the Update function
+			tappable := NewTappableContainer(box, nil)
+			return tappable
 		},
 		// Update function
 		func(uid string, branch bool, obj fyne.CanvasObject) {
-			c := obj.(*fyne.Container)
+			tappable := obj.(*TappableContainer)
+			c := tappable.container
 			icon := c.Objects[0].(*widget.Icon)
 			label := c.Objects[1].(*widget.Label)
 
 			if uid == "" {
 				label.SetText("Root")
 				icon.SetResource(theme.FolderIcon())
+				tappable.onSecondaryTap = nil
 				return
 			}
 
@@ -229,6 +236,11 @@ func (a *App) createTree() *widget.Tree {
 					}
 				}
 				icon.SetResource(theme.FolderIcon())
+
+				// Set right-click handler for bucket nodes
+				tappable.onSecondaryTap = func(position fyne.Position) {
+					a.showBucketContextMenu(bucketName, position)
+				}
 				return
 			}
 
@@ -245,6 +257,7 @@ func (a *App) createTree() *widget.Tree {
 				}
 				if lastColon == -1 {
 					label.SetText("Unknown")
+					tappable.onSecondaryTap = nil
 					return
 				}
 
@@ -255,8 +268,12 @@ func (a *App) createTree() *widget.Tree {
 				if !exists {
 					label.SetText("Loading...")
 					icon.SetResource(theme.InfoIcon())
+					tappable.onSecondaryTap = nil
 					return
 				}
+
+				// Clear right-click handler for metadata nodes
+				tappable.onSecondaryTap = nil
 
 				switch fieldName {
 				case "created":
@@ -356,6 +373,47 @@ func (a *App) refreshBuckets() {
 
 	// Reload buckets
 	a.loadBuckets()
+}
+
+// showBucketContextMenu displays a context menu for a bucket
+func (a *App) showBucketContextMenu(bucketName string, position fyne.Position) {
+	// Create menu items
+	copyNameItem := fyne.NewMenuItem("Copy name", func() {
+		a.window.Clipboard().SetContent(bucketName)
+		slog.Info("Copied bucket name to clipboard", slog.String("bucket", bucketName))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Copied %q to clipboard", bucketName))
+		}, true)
+	})
+
+	refreshItem := fyne.NewMenuItem("Refresh", func() {
+		go a.refreshSingleBucket(bucketName)
+	})
+
+	// Create and show the popup menu
+	menu := fyne.NewMenu("", copyNameItem, refreshItem)
+	popUpMenu := widget.NewPopUpMenu(menu, a.window.Canvas())
+	popUpMenu.ShowAtPosition(position)
+}
+
+// refreshSingleBucket invalidates and reloads metadata for a specific bucket
+func (a *App) refreshSingleBucket(bucketName string) {
+	slog.Info("Refreshing bucket", slog.String("bucket", bucketName))
+
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText(fmt.Sprintf("Refreshing %s...", bucketName))
+	}, true)
+
+	// Remove cached metadata
+	delete(a.treeData.bucketMetadata, bucketName)
+
+	// Delete bucket from storage to force refresh
+	if err := a.storage.DeleteBucket(a.ctx, a.sessionID, bucketName); err != nil {
+		slog.Warn("Failed to delete bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
+	}
+
+	// Reload bucket metadata from S3
+	a.loadBucketMetadata(bucketName)
 }
 
 // loadBuckets loads the list of S3 buckets
