@@ -31,14 +31,6 @@ type BucketDetails struct {
 	BucketMetadata `json:",inline"`
 }
 
-// Object represents an S3 object
-type Object struct {
-	Key          string  `json:"key"`
-	Size         int64   `json:"size"`
-	IsPrefix     bool    `json:"is_prefix"`
-	LastModified *string `json:"last_modified,omitempty"`
-}
-
 // ObjectVersion represents an S3 object version with detailed metadata
 type ObjectVersion struct {
 	Key            string    `json:"key"`
