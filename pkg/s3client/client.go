@@ -11,7 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	awsCredentials "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go/logging"
+	"github.com/cappuccinotm/slogx"
 )
 
 // ClientLogModeDebug is a combination of all logging modes for debugging purposes
@@ -34,6 +36,18 @@ type Client struct {
 type Bucket struct {
 	Name         string
 	CreationDate *string
+}
+
+// BucketMetadata represents S3 bucket metadata and configuration
+type BucketMetadata struct {
+	VersioningEnabled bool
+	VersioningStatus  string
+	ObjectLockEnabled bool
+	ObjectLockMode    string
+	RetentionEnabled  bool
+	RetentionDays     int32
+	RetentionYears    int32
+	RetentionMode     string
 }
 
 // Object represents an S3 object
@@ -141,6 +155,45 @@ func NewClient(ctx context.Context, cfg Config, version string) (*Client, error)
 			o.UsePathStyle = true
 		}),
 	}, nil
+}
+
+// GetBucketMetadata retrieves bucket metadata including versioning, lock, and retention settings
+func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*BucketMetadata, error) {
+	metadata := &BucketMetadata{}
+
+	// Get versioning status
+	versioningOutput, err := c.s3Client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		slog.Warn("Could not get bucket versioning", slog.String("bucket", bucketName), slogx.Error(err))
+	} else {
+		metadata.VersioningStatus = string(versioningOutput.Status)
+		metadata.VersioningEnabled = versioningOutput.Status == s3Types.BucketVersioningStatusEnabled
+	}
+
+	// Get object lock configuration
+	lockOutput, err := c.s3Client.GetObjectLockConfiguration(ctx, &s3.GetObjectLockConfigurationInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		slog.Debug("Failed to get object lock configuration", slog.String("bucket", bucketName), slogx.Error(err))
+	} else if lockOutput.ObjectLockConfiguration != nil {
+		metadata.ObjectLockEnabled = lockOutput.ObjectLockConfiguration.ObjectLockEnabled == s3Types.ObjectLockEnabledEnabled
+		if lockOutput.ObjectLockConfiguration.Rule != nil && lockOutput.ObjectLockConfiguration.Rule.DefaultRetention != nil {
+			defaultRetention := lockOutput.ObjectLockConfiguration.Rule.DefaultRetention
+			metadata.RetentionEnabled = true
+			metadata.RetentionMode = string(defaultRetention.Mode)
+			if defaultRetention.Days != nil {
+				metadata.RetentionDays = *defaultRetention.Days
+			}
+			if defaultRetention.Years != nil {
+				metadata.RetentionYears = *defaultRetention.Years
+			}
+		}
+	}
+
+	return metadata, nil
 }
 
 // ListBuckets returns all S3 buckets

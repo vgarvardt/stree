@@ -38,8 +38,8 @@ type App struct {
 
 // TreeData holds the hierarchical data for the tree widget
 type TreeData struct {
-	buckets    []s3client.Bucket
-	bucketData map[string][]s3client.Object // bucketName -> objects
+	buckets        []s3client.Bucket
+	bucketMetadata map[string]*s3client.BucketMetadata // bucketName -> metadata
 }
 
 // NewApp creates a new GUI application
@@ -48,8 +48,8 @@ func NewApp(version string) *App {
 		fyneApp: app.New(),
 		version: version,
 		treeData: &TreeData{
-			buckets:    []s3client.Bucket{},
-			bucketData: make(map[string][]s3client.Object),
+			buckets:        []s3client.Bucket{},
+			bucketMetadata: make(map[string]*s3client.BucketMetadata),
 		},
 	}
 }
@@ -122,16 +122,20 @@ func (a *App) createTree() *widget.Tree {
 			// Check if this is a bucket node
 			if len(uid) > 7 && uid[:7] == "bucket:" {
 				bucketName := uid[7:]
-				objects, exists := a.treeData.bucketData[bucketName]
+				metadata, exists := a.treeData.bucketMetadata[bucketName]
 				if !exists {
 					return []string{}
 				}
 
-				uids := make([]string, len(objects))
-				for i, obj := range objects {
-					uids[i] = "object:" + bucketName + ":" + obj.Key
+				// Return metadata items as child nodes
+				items := []string{
+					"meta:" + bucketName + ":created",
+					"meta:" + bucketName + ":versioning",
+					"meta:" + bucketName + ":lock",
+					"meta:" + bucketName + ":retention",
 				}
-				return uids
+				_ = metadata // Avoid unused variable
+				return items
 			}
 
 			return []string{}
@@ -145,19 +149,7 @@ func (a *App) createTree() *widget.Tree {
 			if len(uid) > 7 && uid[:7] == "bucket:" {
 				return true
 			}
-			// Objects with IsPrefix are branches (folders)
-			if len(uid) > 7 && uid[:7] == "object:" {
-				parts := uid[7:]
-				// Parse: bucketName:objectKey
-				for bucketName, objects := range a.treeData.bucketData {
-					for _, obj := range objects {
-						key := bucketName + ":" + obj.Key
-						if parts == key && obj.IsPrefix {
-							return true
-						}
-					}
-				}
-			}
+			// Metadata items are not branches
 			return false
 		},
 		// Create function
@@ -181,31 +173,110 @@ func (a *App) createTree() *widget.Tree {
 			// Handle bucket nodes
 			if len(uid) > 7 && uid[:7] == "bucket:" {
 				bucketName := uid[7:]
-				label.SetText(bucketName)
+				// Find the bucket to show creation date
+				var creationDate string
+				for _, bucket := range a.treeData.buckets {
+					if bucket.Name == bucketName {
+						if bucket.CreationDate != nil {
+							creationDate = " (" + *bucket.CreationDate + ")"
+						}
+						break
+					}
+				}
+				label.SetText(bucketName + creationDate)
 				icon.SetResource(theme.FolderIcon())
 				return
 			}
 
-			// Handle object nodes
-			if len(uid) > 7 && uid[:7] == "object:" {
-				parts := uid[7:]
-				// Find the object
-				for bucketName, objects := range a.treeData.bucketData {
-					for _, obj := range objects {
-						key := bucketName + ":" + obj.Key
-						if parts == key {
-							label.SetText(obj.Key)
-							if obj.IsPrefix {
-								icon.SetResource(theme.FolderIcon())
-							} else {
-								icon.SetResource(theme.DocumentIcon())
-							}
+			// Handle metadata nodes
+			if len(uid) > 5 && uid[:5] == "meta:" {
+				parts := uid[5:] // Remove "meta:" prefix
+				// Parse: bucketName:fieldName
+				lastColon := -1
+				for i := len(parts) - 1; i >= 0; i-- {
+					if parts[i] == ':' {
+						lastColon = i
+						break
+					}
+				}
+				if lastColon == -1 {
+					label.SetText("Unknown")
+					return
+				}
+
+				bucketName := parts[:lastColon]
+				fieldName := parts[lastColon+1:]
+
+				metadata, exists := a.treeData.bucketMetadata[bucketName]
+				if !exists {
+					label.SetText("Loading...")
+					icon.SetResource(theme.InfoIcon())
+					return
+				}
+
+				switch fieldName {
+				case "created":
+					for _, bucket := range a.treeData.buckets {
+						if bucket.Name == bucketName && bucket.CreationDate != nil {
+							label.SetText("Created: " + *bucket.CreationDate)
+							icon.SetResource(theme.HistoryIcon())
 							return
 						}
 					}
+					label.SetText("Created: Unknown")
+					icon.SetResource(theme.HistoryIcon())
+				case "versioning":
+					status := "Disabled"
+					if metadata.VersioningEnabled {
+						status = "Enabled"
+					} else if metadata.VersioningStatus != "" {
+						status = metadata.VersioningStatus
+					}
+					label.SetText("Versioning: " + status)
+					if metadata.VersioningEnabled {
+						icon.SetResource(theme.CheckButtonCheckedIcon())
+					} else {
+						icon.SetResource(theme.CheckButtonIcon())
+					}
+				case "lock":
+					status := "Disabled"
+					if metadata.ObjectLockEnabled {
+						status = "Enabled"
+					}
+					label.SetText("Object Lock: " + status)
+					if metadata.ObjectLockEnabled {
+						icon.SetResource(theme.ConfirmIcon())
+					} else {
+						icon.SetResource(theme.CancelIcon())
+					}
+				case "retention":
+					if metadata.RetentionEnabled {
+						if metadata.RetentionYears > 0 {
+							period := "year"
+							if metadata.RetentionYears > 1 {
+								period = "years"
+							}
+
+							label.SetText(fmt.Sprintf("Retention: %d %s (%s)", metadata.RetentionYears, period, metadata.RetentionMode))
+						} else if metadata.RetentionDays > 0 {
+							period := "day"
+							if metadata.RetentionDays > 1 {
+								period = "days"
+							}
+
+							label.SetText(fmt.Sprintf("Retention: %d %s (%s)", metadata.RetentionDays, period, metadata.RetentionMode))
+						} else {
+							label.SetText(fmt.Sprintf("Retention: Enabled (%s)", metadata.RetentionMode))
+						}
+						icon.SetResource(theme.ContentAddIcon())
+					} else {
+						label.SetText("Retention: Not configured")
+						icon.SetResource(theme.ContentRemoveIcon())
+					}
+				default:
+					label.SetText("Unknown field")
+					icon.SetResource(theme.QuestionIcon())
 				}
-				label.SetText(parts)
-				icon.SetResource(theme.DocumentIcon())
 			}
 		},
 	)
@@ -215,8 +286,8 @@ func (a *App) createTree() *widget.Tree {
 		// Check if this is a bucket that hasn't been loaded yet
 		if len(uid) > 7 && uid[:7] == "bucket:" {
 			bucketName := uid[7:]
-			if _, exists := a.treeData.bucketData[bucketName]; !exists {
-				go a.loadBucketObjects(bucketName)
+			if _, exists := a.treeData.bucketMetadata[bucketName]; !exists {
+				go a.loadBucketMetadata(bucketName)
 			}
 		}
 	}
@@ -228,8 +299,8 @@ func (a *App) createTree() *widget.Tree {
 func (a *App) refreshBuckets() {
 	slog.Info("Refreshing S3 buckets")
 
-	// Clear cached bucket data
-	a.treeData.bucketData = make(map[string][]s3client.Object)
+	// Clear cached bucket metadata
+	a.treeData.bucketMetadata = make(map[string]*s3client.BucketMetadata)
 
 	// Reload buckets
 	a.loadBuckets()
@@ -262,29 +333,29 @@ func (a *App) loadBuckets() {
 	}, true)
 }
 
-// loadBucketObjects loads objects for a specific bucket
-func (a *App) loadBucketObjects(bucketName string) {
-	slog.Info("Loading objects for bucket", slog.String("bucket", bucketName))
+// loadBucketMetadata loads metadata for a specific bucket
+func (a *App) loadBucketMetadata(bucketName string) {
+	slog.Info("Loading metadata for bucket", slog.String("bucket", bucketName))
 	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.statusBar.SetText(fmt.Sprintf("Loading objects from %s...", bucketName))
+		a.statusBar.SetText(fmt.Sprintf("Loading metadata for %s...", bucketName))
 	}, true)
 
-	objects, err := a.s3Client.ListObjects(context.TODO(), bucketName)
+	metadata, err := a.s3Client.GetBucketMetadata(context.TODO(), bucketName)
 	if err != nil {
-		slog.Error("Failed to load objects", slogx.Error(err), slog.String("bucket", bucketName))
+		slog.Error("Failed to load bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
 			a.statusBar.SetText(fmt.Sprintf("Error loading %s: %v", bucketName, err))
 		}, true)
 		return
 	}
 
-	a.treeData.bucketData[bucketName] = objects
+	a.treeData.bucketMetadata[bucketName] = metadata
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()
 	}, true)
 
-	slog.Info("Loaded objects", slog.String("bucket", bucketName), slog.Int("count", len(objects)))
+	slog.Info("Loaded bucket metadata", slog.String("bucket", bucketName))
 	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.statusBar.SetText(fmt.Sprintf("Loaded %d object(s) from %s", len(objects), bucketName))
+		a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s", bucketName))
 	}, true)
 }
