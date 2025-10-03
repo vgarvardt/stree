@@ -741,15 +741,17 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 		return
 	}
 
-	slog.Info("Updated bucket metadata", slog.String("bucket", bucketName), slog.Duration("elapsed", time.Since(startedAt)))
+	elapsed := time.Since(startedAt)
+	slog.Info("Updated bucket metadata", slog.String("bucket", bucketName), slog.Duration("elapsed", elapsed))
 
 	// Refresh tree on UI thread
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()
-		a.statusBar.SetText(fmt.Sprintf("Refreshed objects for %s: %s objects, %s",
+		a.statusBar.SetText(fmt.Sprintf("Refreshed objects for %s: %s objects, %s in %s",
 			bucketName,
 			humanize.Comma(latestVersionCount),
 			humanize.Bytes(uint64(latestVersionSize)),
+			elapsed,
 		))
 	}, false)
 }
