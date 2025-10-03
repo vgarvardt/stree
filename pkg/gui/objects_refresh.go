@@ -100,100 +100,33 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 
 	progressChan <- refreshProgress{
 		elapsed:      time.Since(startedAt),
-		currentPhase: "Fetching object versions from S3...",
+		currentPhase: "Fetching and storing object versions from S3...",
 	}
 
-	// Fetch all object versions from S3 in batches
-	versions, err := a.listObjectVersionsWithProgress(ctx, bucketName, startedAt, progressChan)
+	// Fetch and process object versions in batches, calculating aggregates on the fly
+	aggregates, err := a.fetchAndStoreObjectVersions(ctx, bucketName, storedBucket.ID, startedAt, progressChan)
 	if err != nil {
 		if ctx.Err() != nil {
 			doneChan <- refreshResult{success: false, cancelled: true}
 			return
 		}
-		slog.Error("Failed to list object versions", slogx.Error(err), slog.String("bucket", bucketName))
-		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to list object versions: %w", err)}
+		slog.Error("Failed to fetch and store object versions", slogx.Error(err), slog.String("bucket", bucketName))
+		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to fetch and store object versions: %w", err)}
 		return
-	}
-
-	slog.Info("Fetched object versions from S3", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
-
-	// Check for cancellation
-	if ctx.Err() != nil {
-		doneChan <- refreshResult{success: false, cancelled: true}
-		return
-	}
-
-	progressChan <- refreshProgress{
-		elapsed:      time.Since(startedAt),
-		fetchedCount: len(versions),
-		currentPhase: "Storing object versions...",
-	}
-
-	// Insert object versions into storage in batches
-	const batchSize = 1000
-	for i := 0; i < len(versions); i += batchSize {
-		// Check for cancellation before each batch
-		if ctx.Err() != nil {
-			doneChan <- refreshResult{success: false, cancelled: true}
-			return
-		}
-
-		end := i + batchSize
-		if end > len(versions) {
-			end = len(versions)
-		}
-
-		batch := versions[i:end]
-		if err := a.storage.BulkInsertObjectVersions(ctx, storedBucket.ID, batch); err != nil {
-			slog.Error("Failed to insert object versions batch", slogx.Error(err), slog.String("bucket", bucketName), slog.Int("batch-start", i))
-			doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to store object versions: %w", err)}
-			return
-		}
-	}
-
-	slog.Info("Stored object versions in storage", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
-
-	// Check for cancellation
-	if ctx.Err() != nil {
-		doneChan <- refreshResult{success: false, cancelled: true}
-		return
-	}
-
-	progressChan <- refreshProgress{
-		elapsed:      time.Since(startedAt),
-		fetchedCount: len(versions),
-		currentPhase: "Calculating aggregates...",
-	}
-
-	// Calculate aggregates
-	var totalCount int64
-	var totalSize int64
-	var latestVersionCount int64
-	var latestVersionSize int64
-	var deleteMarkerCount int64
-
-	for _, version := range versions {
-		totalCount++
-
-		if version.IsDeleteMarker {
-			deleteMarkerCount++
-		} else {
-			totalSize += version.Size
-
-			if version.IsLatest {
-				latestVersionCount++
-				latestVersionSize += version.Size
-			}
-		}
 	}
 
 	slog.Info("Calculated aggregates",
 		slog.String("bucket", bucketName),
-		slog.Int64("total-count", totalCount),
-		slog.Int64("total-size", totalSize),
-		slog.Int64("latest-version-count", latestVersionCount),
-		slog.Int64("latest-version-size", latestVersionSize),
-		slog.Int64("delete-marker-count", deleteMarkerCount),
+		slog.Int64("total-count", aggregates.totalCount),
+		slog.String("total-count-fmt", humanize.Comma(aggregates.totalCount)),
+		slog.Int64("total-size", aggregates.totalSize),
+		slog.String("total-size-fmt", humanize.Bytes(uint64(aggregates.totalSize))),
+		slog.Int64("latest-version-count", aggregates.latestVersionCount),
+		slog.String("latest-version-count-fmt", humanize.Comma(aggregates.latestVersionCount)),
+		slog.Int64("latest-version-size", aggregates.latestVersionSize),
+		slog.String("latest-version-size-fmt", humanize.Bytes(uint64(aggregates.latestVersionSize))),
+		slog.Int64("delete-marker-count", aggregates.deleteMarkerCount),
+		slog.String("delete-marker-count-fmt", humanize.Comma(aggregates.deleteMarkerCount)),
 	)
 
 	// Update metadata in storage
@@ -207,8 +140,8 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 	// Update the metadata with new aggregates
 	now := time.Now()
 	metadata.ObjectsRefreshedAt = &now
-	metadata.ObjectsCount = latestVersionCount
-	metadata.ObjectsSize = latestVersionSize
+	metadata.ObjectsCount = aggregates.latestVersionCount
+	metadata.ObjectsSize = aggregates.latestVersionSize
 
 	// Find the bucket to get its creation date
 	var bucket models.Bucket
@@ -233,24 +166,28 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 	// Send success result
 	doneChan <- refreshResult{
 		success:            true,
-		totalCount:         totalCount,
-		latestVersionCount: latestVersionCount,
-		latestVersionSize:  latestVersionSize,
+		totalCount:         aggregates.totalCount,
+		latestVersionCount: aggregates.latestVersionCount,
+		latestVersionSize:  aggregates.latestVersionSize,
 		elapsed:            elapsed,
 	}
 }
 
-// listObjectVersionsWithProgress lists object versions and sends progress updates
-func (a *App) listObjectVersionsWithProgress(ctx context.Context, bucketName string, startedAt time.Time, progressChan chan<- refreshProgress) ([]models.ObjectVersion, error) {
-	var allVersions []models.ObjectVersion
+// objectAggregates holds aggregate statistics calculated during object version processing
+type objectAggregates struct {
+	totalCount         int64
+	totalSize          int64
+	latestVersionCount int64
+	latestVersionSize  int64
+	deleteMarkerCount  int64
+	fetchedCount       int
+}
 
+// fetchAndStoreObjectVersions fetches object versions from S3 and stores them in batches,
+// calculating aggregates on the fly without keeping all versions in memory
+func (a *App) fetchAndStoreObjectVersions(ctx context.Context, bucketName string, bucketID int64, startedAt time.Time, progressChan chan<- refreshProgress) (*objectAggregates, error) {
+	aggregates := &objectAggregates{}
 	lastProgressUpdate := time.Now()
-	var totalCount int64
-	var totalSize int64
-	var latestVersionCount int64
-	var latestVersionSize int64
-	var deleteMarkerCount int64
-
 	var pagination *models.Pagination
 
 	for {
@@ -259,39 +196,51 @@ func (a *App) listObjectVersionsWithProgress(ctx context.Context, bucketName str
 			return nil, ctx.Err()
 		}
 
-		// Fetch a batch of object versions
+		// Fetch a batch of object versions from S3
 		versions, nextPagination, err := a.s3Client.ListObjectVersions(ctx, bucketName, pagination)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list object versions: %w", err)
 		}
 
-		// Process the batch
+		// Process and calculate aggregates for this batch
 		for _, version := range versions {
-			allVersions = append(allVersions, version)
+			aggregates.fetchedCount++
+			aggregates.totalCount++
 
-			totalCount++
 			if version.IsDeleteMarker {
-				deleteMarkerCount++
+				aggregates.deleteMarkerCount++
 			} else {
-				totalSize += version.Size
+				aggregates.totalSize += version.Size
+
 				if version.IsLatest {
-					latestVersionCount++
-					latestVersionSize += version.Size
+					aggregates.latestVersionCount++
+					aggregates.latestVersionSize += version.Size
 				}
 			}
+		}
+
+		// Store this batch immediately to the database
+		if len(versions) > 0 {
+			if err := a.storage.BulkInsertObjectVersions(ctx, bucketID, versions); err != nil {
+				return nil, fmt.Errorf("failed to store object versions batch: %w", err)
+			}
+			slog.Debug("Stored batch of object versions",
+				slog.String("bucket", bucketName),
+				slog.Int("batch-size", len(versions)),
+				slog.Int("total-fetched", aggregates.fetchedCount))
 		}
 
 		// Send progress update every 1 second
 		if time.Since(lastProgressUpdate) >= time.Second {
 			progressChan <- refreshProgress{
 				elapsed:            time.Since(startedAt),
-				fetchedCount:       len(allVersions),
-				totalCount:         totalCount,
-				totalSize:          totalSize,
-				latestVersionCount: latestVersionCount,
-				latestVersionSize:  latestVersionSize,
-				deleteMarkerCount:  deleteMarkerCount,
-				currentPhase:       fmt.Sprintf("Fetching object versions... (%d fetched)", len(allVersions)),
+				fetchedCount:       aggregates.fetchedCount,
+				totalCount:         aggregates.totalCount,
+				totalSize:          aggregates.totalSize,
+				latestVersionCount: aggregates.latestVersionCount,
+				latestVersionSize:  aggregates.latestVersionSize,
+				deleteMarkerCount:  aggregates.deleteMarkerCount,
+				currentPhase:       fmt.Sprintf("Fetching and storing object versions... (%d processed)", aggregates.fetchedCount),
 			}
 			lastProgressUpdate = time.Now()
 		}
@@ -304,8 +253,11 @@ func (a *App) listObjectVersionsWithProgress(ctx context.Context, bucketName str
 		pagination = nextPagination
 	}
 
-	slog.Info("Listed object versions", slog.String("bucket", bucketName), slog.Int("count", len(allVersions)))
-	return allVersions, nil
+	slog.Info("Completed fetching and storing object versions",
+		slog.String("bucket", bucketName),
+		slog.Int("total-count", aggregates.fetchedCount))
+
+	return aggregates, nil
 }
 
 // showRefreshProgressModal displays a modal dialog with progress information
