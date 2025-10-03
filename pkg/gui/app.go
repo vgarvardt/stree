@@ -13,8 +13,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/cappuccinotm/slogx"
 	"github.com/dustin/go-humanize"
 	"github.com/goccy/go-json"
@@ -845,9 +843,7 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 
 // listObjectVersionsWithProgress lists object versions and sends progress updates
 func (a *App) listObjectVersionsWithProgress(ctx context.Context, bucketName string, startedAt time.Time, progressChan chan<- refreshProgress) ([]models.ObjectVersion, error) {
-	var versions []models.ObjectVersion
-	var keyMarker *string
-	var versionIDMarker *string
+	var allVersions []models.ObjectVersion
 
 	lastProgressUpdate := time.Now()
 	var totalCount int64
@@ -856,87 +852,61 @@ func (a *App) listObjectVersionsWithProgress(ctx context.Context, bucketName str
 	var latestVersionSize int64
 	var deleteMarkerCount int64
 
+	var pagination *models.Pagination
+
 	for {
 		// Check for cancellation
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		input := &s3.ListObjectVersionsInput{
-			Bucket:          aws.String(bucketName),
-			KeyMarker:       keyMarker,
-			VersionIdMarker: versionIDMarker,
-			MaxKeys:         aws.Int32(1000),
-		}
-
-		output, err := a.s3Client.ListObjectVersionsRaw(ctx, input)
+		// Fetch a batch of object versions
+		versions, nextPagination, err := a.s3Client.ListObjectVersions(ctx, bucketName, pagination)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list object versions: %w", err)
 		}
 
-		// Process object versions
-		for _, ver := range output.Versions {
-			version := models.ObjectVersion{
-				Key:            aws.ToString(ver.Key),
-				VersionID:      aws.ToString(ver.VersionId),
-				IsLatest:       aws.ToBool(ver.IsLatest),
-				Size:           aws.ToInt64(ver.Size),
-				LastModified:   aws.ToTime(ver.LastModified),
-				IsDeleteMarker: false,
-				ETag:           aws.ToString(ver.ETag),
-				StorageClass:   string(ver.StorageClass),
-			}
-			versions = append(versions, version)
+		// Process the batch
+		for _, version := range versions {
+			allVersions = append(allVersions, version)
 
 			totalCount++
-			totalSize += version.Size
-			if version.IsLatest {
-				latestVersionCount++
-				latestVersionSize += version.Size
+			if version.IsDeleteMarker {
+				deleteMarkerCount++
+			} else {
+				totalSize += version.Size
+				if version.IsLatest {
+					latestVersionCount++
+					latestVersionSize += version.Size
+				}
 			}
 		}
 
-		// Process delete markers
-		for _, dm := range output.DeleteMarkers {
-			version := models.ObjectVersion{
-				Key:            aws.ToString(dm.Key),
-				VersionID:      aws.ToString(dm.VersionId),
-				IsLatest:       aws.ToBool(dm.IsLatest),
-				Size:           0,
-				LastModified:   aws.ToTime(dm.LastModified),
-				IsDeleteMarker: true,
-			}
-			versions = append(versions, version)
-			totalCount++
-			deleteMarkerCount++
-		}
-
-		// Send progress update every 1 second
+		// Send progress update every seconds
 		if time.Since(lastProgressUpdate) >= time.Second {
 			progressChan <- refreshProgress{
 				elapsed:            time.Since(startedAt),
-				fetchedCount:       len(versions),
+				fetchedCount:       len(allVersions),
 				totalCount:         totalCount,
 				totalSize:          totalSize,
 				latestVersionCount: latestVersionCount,
 				latestVersionSize:  latestVersionSize,
 				deleteMarkerCount:  deleteMarkerCount,
-				currentPhase:       fmt.Sprintf("Fetching object versions... (%d fetched)", len(versions)),
+				currentPhase:       fmt.Sprintf("Fetching object versions... (%d fetched)", len(allVersions)),
 			}
 			lastProgressUpdate = time.Now()
 		}
 
 		// Check if there are more results
-		if !aws.ToBool(output.IsTruncated) {
+		if !nextPagination.IsTruncated {
 			break
 		}
 
-		keyMarker = output.NextKeyMarker
-		versionIDMarker = output.NextVersionIdMarker
+		pagination = nextPagination
 	}
 
-	slog.Info("Listed object versions", slog.String("bucket", bucketName), slog.Int("count", len(versions)))
-	return versions, nil
+	slog.Info("Listed object versions", slog.String("bucket", bucketName), slog.Int("count", len(allVersions)))
+	return allVersions, nil
 }
 
 // showRefreshProgressModal displays a modal dialog with progress information
