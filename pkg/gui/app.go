@@ -385,10 +385,12 @@ func (a *App) showBucketContextMenu(bucketName string, position fyne.Position) {
 			a.statusBar.SetText(fmt.Sprintf("Copied %q to clipboard", bucketName))
 		}, true)
 	})
+	copyNameItem.Icon = theme.ContentCopyIcon()
 
 	refreshItem := fyne.NewMenuItem("Refresh", func() {
 		go a.refreshSingleBucket(bucketName)
 	})
+	refreshItem.Icon = theme.ViewRefreshIcon()
 
 	// Create and show the popup menu
 	menu := fyne.NewMenu("", copyNameItem, refreshItem)
