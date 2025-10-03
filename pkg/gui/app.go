@@ -295,38 +295,44 @@ func (a *App) createTree() *widget.Tree {
 		},
 		// Create function
 		func(branch bool) fyne.CanvasObject {
-			icon := widget.NewIcon(theme.DocumentIcon())
-			label := widget.NewLabel("Template")
-			box := container.NewHBox(icon, label)
-
-			// Wrap in TappableContainer to handle right-clicks
-			// The onSecondaryTap callback will be set in the Update function
-			tappable := NewTappableContainer(box, nil)
-			return tappable
+			if branch {
+				// For branches (buckets), only create a label
+				// The folder icon (open/closed) will be provided by the tree widget itself
+				label := widget.NewLabel("Template")
+				// Wrap in TappableContainer to handle right-clicks
+				tappable := NewTappableContainer(container.NewWithoutLayout(label), nil)
+				return tappable
+			} else {
+				// For leaves (metadata items), create icon + label
+				icon := widget.NewIcon(theme.DocumentIcon())
+				label := widget.NewLabel("Template")
+				box := container.NewHBox(icon, label)
+				return box
+			}
 		},
 		// Update function
 		func(uid string, branch bool, obj fyne.CanvasObject) {
-			tappable := obj.(*TappableContainer)
-			c := tappable.container
-			icon := c.Objects[0].(*widget.Icon)
-			label := c.Objects[1].(*widget.Label)
-
 			if uid == "" {
-				label.SetText("Root")
-				icon.SetResource(theme.FolderIcon())
-				tappable.onSecondaryTap = nil
+				// Root node
+				if tappable, ok := obj.(*TappableContainer); ok {
+					label := tappable.container.Objects[0].(*widget.Label)
+					label.SetText("Root")
+					tappable.onSecondaryTap = nil
+				}
 				return
 			}
 
-			// Handle bucket nodes
+			// Handle bucket nodes (branches)
 			if strings.HasPrefix(uid, uidPrefixBucket) {
+				tappable := obj.(*TappableContainer)
+				label := tappable.container.Objects[0].(*widget.Label)
+
 				bucketName := uid[len(uidPrefixBucket):]
 				for _, bucket := range a.treeData.buckets {
 					if bucket.Name == bucketName {
 						label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
 					}
 				}
-				icon.SetResource(theme.FolderIcon())
 
 				// Set right-click handler for bucket nodes
 				tappable.onSecondaryTap = func(position fyne.Position) {
@@ -335,8 +341,12 @@ func (a *App) createTree() *widget.Tree {
 				return
 			}
 
-			// Handle metadata nodes
+			// Handle metadata nodes (leaves) - these have icon + label
 			if strings.HasPrefix(uid, uidPrefixMeta) {
+				c := obj.(*fyne.Container)
+				icon := c.Objects[0].(*widget.Icon)
+				label := c.Objects[1].(*widget.Label)
+
 				parts := uid[len(uidPrefixMeta):] // Remove "meta:" prefix
 				// Parse: bucketName:fieldName
 				lastColon := -1
@@ -348,7 +358,7 @@ func (a *App) createTree() *widget.Tree {
 				}
 				if lastColon == -1 {
 					label.SetText("Unknown")
-					tappable.onSecondaryTap = nil
+					icon.SetResource(theme.QuestionIcon())
 					return
 				}
 
@@ -359,12 +369,8 @@ func (a *App) createTree() *widget.Tree {
 				if !exists {
 					label.SetText("Loading...")
 					icon.SetResource(theme.InfoIcon())
-					tappable.onSecondaryTap = nil
 					return
 				}
-
-				// Clear right-click handler for metadata nodes
-				tappable.onSecondaryTap = nil
 
 				switch fieldName {
 				case "created":
@@ -440,6 +446,9 @@ func (a *App) createTree() *widget.Tree {
 		},
 	)
 
+	// Visual settings
+	tree.HideSeparators = true
+
 	// Handle node opening (expansion)
 	tree.OnBranchOpened = func(uid string) {
 		// Check if this is a bucket that hasn't been loaded yet
@@ -460,13 +469,7 @@ func (a *App) refreshBuckets() {
 
 	// Close all open branches to reset the tree state
 	a.fyneApp.Driver().DoFromGoroutine(func() {
-		// Close all bucket branches by iterating through them
-		for _, bucket := range a.treeData.buckets {
-			bucketUID := uidPrefixBucket + bucket.Name
-			if a.tree.IsBranchOpen(bucketUID) {
-				a.tree.CloseBranch(bucketUID)
-			}
-		}
+		a.tree.CloseAllBranches()
 	}, true)
 
 	// Clear cached bucket metadata
@@ -556,14 +559,13 @@ func (a *App) loadBuckets() {
 		}
 	}
 
+	// Refresh tree on UI thread
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()
-	}, true)
+		a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s)", len(buckets)))
+	}, false)
 
 	slog.Info("Loaded buckets", slog.Int("count", len(buckets)))
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s)", len(buckets)))
-	}, true)
 }
 
 // loadBucketMetadata loads metadata for a specific bucket
@@ -588,10 +590,12 @@ func (a *App) loadBucketMetadata(bucketName string) {
 				// Convert to BucketMetadata
 				metadata := details.ToMetadata()
 				a.treeData.bucketMetadata[bucketName] = metadata
+
+				// Refresh tree on UI thread
 				a.fyneApp.Driver().DoFromGoroutine(func() {
 					a.tree.Refresh()
 					a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s (from cache)", bucketName))
-				}, true)
+				}, false)
 				return
 			}
 		}
@@ -625,12 +629,11 @@ func (a *App) loadBucketMetadata(bucketName string) {
 		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
 	}
 
+	// Refresh tree on UI thread
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()
-	}, true)
+		a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s", bucketName))
+	}, false)
 
 	slog.Info("Loaded bucket metadata", slog.String("bucket", bucketName))
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s", bucketName))
-	}, true)
 }
