@@ -1,10 +1,10 @@
 package storage
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +39,7 @@ func TestStorage(t *testing.T) {
 	assert.Equal(t, sessionID, sessionID2, "Session ID should remain the same on update")
 
 	// Test bucket upsert
-	bucketDetails := map[string]interface{}{
+	bucketDetails := map[string]any{
 		"VersioningEnabled": true,
 		"ObjectLockEnabled": false,
 	}
@@ -53,7 +53,7 @@ func TestStorage(t *testing.T) {
 	assert.Equal(t, "test-bucket", bucket.Name, "Bucket name should match")
 
 	// Verify bucket details JSON
-	var retrievedDetails map[string]interface{}
+	var retrievedDetails map[string]any
 	err = json.Unmarshal(bucket.Details, &retrievedDetails)
 	require.NoError(t, err, "Failed to unmarshal bucket details")
 	assert.Equal(t, true, retrievedDetails["VersioningEnabled"], "VersioningEnabled should be true")
@@ -64,7 +64,7 @@ func TestStorage(t *testing.T) {
 	assert.Len(t, buckets, 1, "Expected 1 bucket")
 
 	// Test object upsert
-	objectProps := map[string]interface{}{
+	objectProps := map[string]any{
 		"Key":  "test-object.txt",
 		"Size": 1024,
 	}
@@ -78,7 +78,7 @@ func TestStorage(t *testing.T) {
 	assert.Len(t, objects, 1, "Expected 1 object")
 
 	// Verify object properties JSON
-	var retrievedProps map[string]interface{}
+	var retrievedProps map[string]any
 	err = json.Unmarshal(objects[0].Properties, &retrievedProps)
 	require.NoError(t, err, "Failed to unmarshal object properties")
 	assert.Equal(t, "test-object.txt", retrievedProps["Key"], "Object key should match")

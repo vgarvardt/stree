@@ -35,11 +35,16 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("could not initialize storage: %w", err)
 			}
+			defer func() {
+				if err := stor.Close(); err != nil {
+					slog.Error("Could not properly close storage", slogx.Error(err))
+				}
+			}()
 
 			logger.Info("Starting main GUI app", slog.String("version", version), slog.String("built", built))
 
 			// Launch the GUI application
-			app := gui.NewApp(version)
+			app := gui.NewApp(stor, version)
 
 			return app.Run(ctx, verboseLogs)
 		},

@@ -3,11 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/goccy/go-json"
 	_ "modernc.org/sqlite" // CGO-free SQLite driver
 )
 
@@ -189,7 +189,7 @@ func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, e
 }
 
 // UpsertBucket creates or updates a bucket
-func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, details interface{}) error {
+func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, details any) error {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return fmt.Errorf("failed to marshal bucket details: %w", err)
@@ -272,7 +272,7 @@ func (s *Storage) GetBucket(ctx context.Context, sessionID int64, name string) (
 }
 
 // UpsertObject creates or updates an object
-func (s *Storage) UpsertObject(ctx context.Context, bucketID int64, properties interface{}) (int64, error) {
+func (s *Storage) UpsertObject(ctx context.Context, bucketID int64, properties any) (int64, error) {
 	propertiesJSON, err := json.Marshal(properties)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal object properties: %w", err)

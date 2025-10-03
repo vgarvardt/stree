@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
+	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/s3client"
 	"github.com/vgarvardt/stree/pkg/storage"
@@ -34,6 +35,7 @@ type App struct {
 	statusBar *widget.Label
 	treeData  *TreeData
 
+	ctx     context.Context
 	storage *storage.Storage
 	version string
 
@@ -82,6 +84,7 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 	}
 
 	a.s3Client = s3Client
+	a.ctx = ctx
 
 	a.window = a.fyneApp.NewWindow("S3 Tree Browser")
 	a.window.Resize(fyne.NewSize(800, 600))
@@ -348,7 +351,7 @@ func (a *App) loadBuckets() {
 		a.statusBar.SetText("Loading buckets...")
 	}, true)
 
-	buckets, err := a.s3Client.ListBuckets(context.TODO())
+	buckets, err := a.s3Client.ListBuckets(a.ctx)
 	if err != nil {
 		slog.Error("Failed to load buckets", slogx.Error(err))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
@@ -358,6 +361,18 @@ func (a *App) loadBuckets() {
 	}
 
 	a.treeData.buckets = buckets
+
+	// Store all buckets to storage
+	for _, bucket := range buckets {
+		bucketData := map[string]any{
+			"Name":         bucket.Name,
+			"CreationDate": bucket.CreationDate,
+		}
+		if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucket.Name, bucketData); err != nil {
+			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", bucket.Name))
+		}
+	}
+
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()
 	}, true)
@@ -375,7 +390,58 @@ func (a *App) loadBucketMetadata(bucketName string) {
 		a.statusBar.SetText(fmt.Sprintf("Loading metadata for %s...", bucketName))
 	}, true)
 
-	metadata, err := a.s3Client.GetBucketMetadata(context.TODO(), bucketName)
+	// First, try to load from storage
+	storedBucket, err := a.storage.GetBucket(a.ctx, a.sessionID, bucketName)
+	if err != nil {
+		slog.Warn("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
+	} else if storedBucket != nil {
+		// Check if we have metadata in the stored details
+		var storedDetails map[string]any
+		if err := json.Unmarshal(storedBucket.Details, &storedDetails); err == nil {
+			// Check if the details contain metadata fields (not just basic bucket info)
+			if _, hasMetadata := storedDetails["VersioningEnabled"]; hasMetadata {
+				slog.Info("Loading bucket metadata from storage", slog.String("bucket", bucketName))
+
+				// Convert stored details to BucketMetadata
+				metadata := &s3client.BucketMetadata{}
+				if v, ok := storedDetails["VersioningEnabled"].(bool); ok {
+					metadata.VersioningEnabled = v
+				}
+				if v, ok := storedDetails["VersioningStatus"].(string); ok {
+					metadata.VersioningStatus = v
+				}
+				if v, ok := storedDetails["ObjectLockEnabled"].(bool); ok {
+					metadata.ObjectLockEnabled = v
+				}
+				if v, ok := storedDetails["ObjectLockMode"].(string); ok {
+					metadata.ObjectLockMode = v
+				}
+				if v, ok := storedDetails["RetentionEnabled"].(bool); ok {
+					metadata.RetentionEnabled = v
+				}
+				if v, ok := storedDetails["RetentionDays"].(float64); ok {
+					metadata.RetentionDays = int32(v)
+				}
+				if v, ok := storedDetails["RetentionYears"].(float64); ok {
+					metadata.RetentionYears = int32(v)
+				}
+				if v, ok := storedDetails["RetentionMode"].(string); ok {
+					metadata.RetentionMode = v
+				}
+
+				a.treeData.bucketMetadata[bucketName] = metadata
+				a.fyneApp.Driver().DoFromGoroutine(func() {
+					a.tree.Refresh()
+					a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s (from cache)", bucketName))
+				}, true)
+				return
+			}
+		}
+	}
+
+	// Not in storage or no metadata, fetch from S3
+	slog.Info("Fetching bucket metadata from S3", slog.String("bucket", bucketName))
+	metadata, err := a.s3Client.GetBucketMetadata(a.ctx, bucketName)
 	if err != nil {
 		slog.Error("Failed to load bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
@@ -385,6 +451,23 @@ func (a *App) loadBucketMetadata(bucketName string) {
 	}
 
 	a.treeData.bucketMetadata[bucketName] = metadata
+
+	// Store the metadata in storage
+	bucketData := map[string]any{
+		"Name":              bucketName,
+		"VersioningEnabled": metadata.VersioningEnabled,
+		"VersioningStatus":  metadata.VersioningStatus,
+		"ObjectLockEnabled": metadata.ObjectLockEnabled,
+		"ObjectLockMode":    metadata.ObjectLockMode,
+		"RetentionEnabled":  metadata.RetentionEnabled,
+		"RetentionDays":     metadata.RetentionDays,
+		"RetentionYears":    metadata.RetentionYears,
+		"RetentionMode":     metadata.RetentionMode,
+	}
+	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucketData); err != nil {
+		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
+	}
+
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()
 	}, true)

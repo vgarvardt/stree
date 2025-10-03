@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.88.3
 	github.com/aws/smithy-go v1.23.0
 	github.com/cappuccinotm/slogx v1.4.2
+	github.com/goccy/go-json v0.10.5
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
 	modernc.org/sqlite v1.39.0
