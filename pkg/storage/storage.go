@@ -29,7 +29,7 @@ type Bucket struct {
 	ID           int64
 	SessionID    int64
 	Name         string
-	CreationDate *time.Time      // Bucket creation date from S3
+	CreationDate time.Time       // Bucket creation date from S3
 	Details      json.RawMessage // JSON field for bucket metadata
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -92,7 +92,7 @@ func (s *Storage) initSchema(ctx context.Context) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id INTEGER NOT NULL,
 		name TEXT NOT NULL,
-		creation_date DATETIME, -- Bucket creation date from S3
+		creation_date DATETIME NOT NULL, -- Bucket creation date from S3
 		details TEXT NOT NULL, -- JSON field
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -192,7 +192,7 @@ func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, e
 }
 
 // UpsertBucket creates or updates a bucket
-func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate *time.Time, details any) error {
+func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate time.Time, details any) error {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return fmt.Errorf("failed to marshal bucket details: %w", err)

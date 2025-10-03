@@ -256,7 +256,7 @@ func (a *App) createTree() *widget.Tree {
 				switch fieldName {
 				case "created":
 					for _, bucket := range a.treeData.buckets {
-						if bucket.Name == bucketName && bucket.CreationDate != nil {
+						if bucket.Name == bucketName {
 							label.SetText("Created: " + bucket.CreationDate.Format(time.RFC3339))
 							icon.SetResource(theme.HistoryIcon())
 							return
@@ -454,7 +454,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 	a.treeData.bucketMetadata[bucketName] = metadata
 
 	// Store the metadata in storage
-	var creationDate *time.Time
+	var creationDate time.Time
 	for _, bucket := range a.treeData.buckets {
 		if bucket.Name == bucketName {
 			creationDate = bucket.CreationDate

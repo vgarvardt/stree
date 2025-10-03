@@ -36,7 +36,7 @@ type Client struct {
 // Bucket represents an S3 bucket
 type Bucket struct {
 	Name         string
-	CreationDate *time.Time
+	CreationDate time.Time
 }
 
 // BucketMetadata represents S3 bucket metadata and configuration
@@ -209,8 +209,9 @@ func (c *Client) ListBuckets(ctx context.Context) ([]Bucket, error) {
 		bucket := Bucket{
 			Name: aws.ToString(b.Name),
 		}
+		bucket.CreationDate = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC) // Default to Unix epoch start
 		if b.CreationDate != nil {
-			bucket.CreationDate = b.CreationDate
+			bucket.CreationDate = *b.CreationDate
 		}
 		buckets = append(buckets, bucket)
 	}
