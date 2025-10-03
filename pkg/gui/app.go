@@ -83,18 +83,18 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 
 	// Create search input
 	searchEntry := widget.NewEntry()
-	searchEntry.SetPlaceHolder("Filter buckets...")
+	searchEntry.SetPlaceHolder("Filter by name...")
 	searchEntry.OnChanged = func(query string) {
 		a.treeData.searchFilter = query
 		a.tree.Refresh()
 	}
 
-	toolbar := container.NewBorder(
-		nil,           // top
-		nil,           // bottom
-		refreshButton, // left
-		searchEntry,   // right
-		nil,           // center
+	buttonsContainer := container.NewHBox(refreshButton)
+
+	// Simple toolbar with everything aligned to the left
+	toolbar := container.NewAdaptiveGrid(2,
+		buttonsContainer,
+		searchEntry,
 	)
 
 	// Create status bar
