@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,39 @@ var (
 	s3Region       = "eu-west-1"
 )
 
+// SortMode represents the bucket sorting mode
+type SortMode int
+
+const (
+	sortNameAsc SortMode = iota
+	sortNameDesc
+	sortDateAsc
+	sortDateDesc
+)
+
+const (
+	labelSortByNameAsc  = "Name ↓"
+	labelSortByNameDesc = "Name ↑"
+	labelSortByDateAsc  = "Date ↓"
+	labelSortByDateDesc = "Date ↑"
+)
+
+// String returns the display name for the sort mode
+func (s SortMode) String() string {
+	switch s {
+	case sortNameAsc:
+		return labelSortByNameAsc
+	case sortNameDesc:
+		return labelSortByNameDesc
+	case sortDateAsc:
+		return labelSortByDateAsc
+	case sortDateDesc:
+		return labelSortByDateDesc
+	default:
+		return labelSortByNameAsc
+	}
+}
+
 // App represents the GUI application
 type App struct {
 	fyneApp   fyne.App
@@ -50,6 +84,7 @@ type TreeData struct {
 	buckets        []models.Bucket
 	bucketMetadata map[string]*models.BucketMetadata // bucketName -> metadata
 	searchFilter   string                            // search filter for bucket names
+	sortMode       SortMode                          // current sorting mode
 }
 
 // NewApp creates a new GUI application
@@ -62,6 +97,7 @@ func NewApp(stor *storage.Storage, version string) *App {
 			buckets:        []models.Bucket{},
 			bucketMetadata: make(map[string]*models.BucketMetadata),
 			searchFilter:   "",
+			sortMode:       sortNameAsc, // Default sorting
 		},
 	}
 }
@@ -97,6 +133,29 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 		go a.refreshBuckets()
 	})
 
+	// Create sort dropdown
+	sortOptions := widget.NewSelect(
+		[]string{sortNameAsc.String(), sortNameDesc.String(), sortDateAsc.String(), sortDateDesc.String()},
+		func(selected string) {
+			var mode SortMode
+			switch selected {
+			case labelSortByNameAsc:
+				mode = sortNameAsc
+			case labelSortByNameDesc:
+				mode = sortNameDesc
+			case labelSortByDateAsc:
+				mode = sortDateAsc
+			case labelSortByDateDesc:
+				mode = sortDateDesc
+			default:
+				mode = sortNameAsc
+			}
+			a.treeData.sortMode = mode
+			a.sortBuckets()
+			a.tree.Refresh()
+		},
+	)
+
 	// Create search input
 	searchEntry := widget.NewEntry()
 	searchEntry.SetPlaceHolder("Filter by name...")
@@ -105,7 +164,7 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 		a.tree.Refresh()
 	}
 
-	buttonsContainer := container.NewHBox(refreshButton)
+	buttonsContainer := container.NewHBox(refreshButton, sortOptions)
 
 	// Simple toolbar with everything aligned to the left
 	toolbar := container.NewAdaptiveGrid(2,
@@ -119,6 +178,8 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 
 	// Create tree widget
 	a.tree = a.createTree()
+	// Set initial sort option only after creating a tree to avoid nil pointer dereference
+	sortOptions.SetSelected(a.treeData.sortMode.String())
 
 	// Create main content with scrolling
 	content := container.NewBorder(
@@ -153,6 +214,28 @@ func (a *App) getFilteredBuckets() []models.Bucket {
 		}
 	}
 	return filtered
+}
+
+// sortBuckets sorts the buckets based on the current sort mode
+func (a *App) sortBuckets() {
+	switch a.treeData.sortMode {
+	case sortNameAsc:
+		sort.Slice(a.treeData.buckets, func(i, j int) bool {
+			return a.treeData.buckets[i].Name < a.treeData.buckets[j].Name
+		})
+	case sortNameDesc:
+		sort.Slice(a.treeData.buckets, func(i, j int) bool {
+			return a.treeData.buckets[i].Name > a.treeData.buckets[j].Name
+		})
+	case sortDateAsc:
+		sort.Slice(a.treeData.buckets, func(i, j int) bool {
+			return a.treeData.buckets[i].CreationDate.Before(a.treeData.buckets[j].CreationDate)
+		})
+	case sortDateDesc:
+		sort.Slice(a.treeData.buckets, func(i, j int) bool {
+			return a.treeData.buckets[i].CreationDate.After(a.treeData.buckets[j].CreationDate)
+		})
+	}
 }
 
 // createTree initializes the tree widget
@@ -436,6 +519,9 @@ func (a *App) loadBuckets() {
 	}
 
 	a.treeData.buckets = buckets
+
+	// Sort buckets according to current sort mode
+	a.sortBuckets()
 
 	// Store all buckets to storage using BucketDetails
 	for _, bucket := range buckets {
