@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
+	"github.com/dustin/go-humanize"
 	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
@@ -259,8 +260,8 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Check if this is a bucket node
-			if len(uid) > 7 && uid[:7] == uidPrefixBucket {
-				bucketName := uid[7:]
+			if strings.HasPrefix(uid, uidPrefixBucket) {
+				bucketName := uid[len(uidPrefixBucket):]
 				metadata, exists := a.treeData.bucketMetadata[bucketName]
 				if !exists {
 					return []string{}
@@ -272,6 +273,7 @@ func (a *App) createTree() *widget.Tree {
 					uidPrefixMeta + bucketName + ":versioning",
 					uidPrefixMeta + bucketName + ":lock",
 					uidPrefixMeta + bucketName + ":retention",
+					uidPrefixMeta + bucketName + ":objects",
 				}
 				_ = metadata // Avoid unused variable
 				return items
@@ -285,7 +287,7 @@ func (a *App) createTree() *widget.Tree {
 				return true
 			}
 			// Buckets are always branches (can be expanded)
-			if len(uid) > 7 && uid[:7] == uidPrefixBucket {
+			if strings.HasPrefix(uid, uidPrefixBucket) {
 				return true
 			}
 			// Metadata items are not branches
@@ -317,8 +319,8 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Handle bucket nodes
-			if len(uid) > 7 && uid[:7] == uidPrefixBucket {
-				bucketName := uid[7:]
+			if strings.HasPrefix(uid, uidPrefixBucket) {
+				bucketName := uid[len(uidPrefixBucket):]
 				for _, bucket := range a.treeData.buckets {
 					if bucket.Name == bucketName {
 						label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
@@ -334,8 +336,8 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Handle metadata nodes
-			if len(uid) > 5 && uid[:5] == uidPrefixMeta {
-				parts := uid[5:] // Remove "meta:" prefix
+			if strings.HasPrefix(uid, uidPrefixMeta) {
+				parts := uid[len(uidPrefixMeta):] // Remove "meta:" prefix
 				// Parse: bucketName:fieldName
 				lastColon := -1
 				for i := len(parts) - 1; i >= 0; i-- {
@@ -423,6 +425,13 @@ func (a *App) createTree() *widget.Tree {
 						label.SetText("Retention: Not configured")
 						icon.SetResource(theme.ContentRemoveIcon())
 					}
+				case "objects":
+					refreshedAt := "???"
+					if metadata.ObjectsRefreshedAt != nil {
+						refreshedAt = metadata.ObjectsRefreshedAt.Format(time.RFC3339)
+					}
+					label.SetText(fmt.Sprintf("Objects: %s / %s @ %s", humanize.Comma(metadata.ObjectsCount), humanize.Bytes(uint64(metadata.ObjectsSize)), refreshedAt))
+					icon.SetResource(theme.StorageIcon())
 				default:
 					label.SetText("Unknown field")
 					icon.SetResource(theme.QuestionIcon())
@@ -434,8 +443,8 @@ func (a *App) createTree() *widget.Tree {
 	// Handle node opening (expansion)
 	tree.OnBranchOpened = func(uid string) {
 		// Check if this is a bucket that hasn't been loaded yet
-		if len(uid) > 7 && uid[:7] == uidPrefixBucket {
-			bucketName := uid[7:]
+		if strings.HasPrefix(uid, uidPrefixBucket) {
+			bucketName := uid[len(uidPrefixBucket):]
 			if _, exists := a.treeData.bucketMetadata[bucketName]; !exists {
 				go a.loadBucketMetadata(bucketName)
 			}

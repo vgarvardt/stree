@@ -18,6 +18,10 @@ type BucketMetadata struct {
 	RetentionDays     int32  `json:"retention_days"`
 	RetentionYears    int32  `json:"retention_years"`
 	RetentionMode     string `json:"retention_mode"`
+
+	ObjectsRefreshedAt *time.Time `json:"objects_refreshed_at,omitempty"`
+	ObjectsCount       int64      `json:"objects_count"`
+	ObjectsSize        int64      `json:"objects_size"`
 }
 
 // BucketDetails represents bucket information stored in the database

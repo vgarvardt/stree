@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.88.3
 	github.com/aws/smithy-go v1.23.0
 	github.com/cappuccinotm/slogx v1.4.2
+	github.com/dustin/go-humanize v1.0.1
 	github.com/goccy/go-json v0.10.5
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
@@ -33,7 +34,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.38.6 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fredbi/uri v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fyne-io/gl-js v0.2.0 // indirect
