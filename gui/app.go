@@ -221,37 +221,53 @@ func (a *App) createTree() *widget.Tree {
 // loadBuckets loads the list of S3 buckets
 func (a *App) loadBuckets() {
 	slog.Info("Loading S3 buckets")
-	a.statusBar.SetText("Loading buckets...")
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText("Loading buckets...")
+	}, true)
 
 	buckets, err := a.s3Client.ListBuckets(context.TODO())
 	if err != nil {
 		slog.Error("Failed to load buckets", slogx.Error(err))
-		a.statusBar.SetText(fmt.Sprintf("Error: %v", err))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error: %v", err))
+		}, true)
 		return
 	}
 
 	a.treeData.buckets = buckets
-	a.tree.Refresh()
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.tree.Refresh()
+	}, true)
 
 	slog.Info("Loaded buckets", slog.Int("count", len(buckets)))
-	a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s)", len(buckets)))
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s)", len(buckets)))
+	}, true)
 }
 
 // loadBucketObjects loads objects for a specific bucket
 func (a *App) loadBucketObjects(bucketName string) {
 	slog.Info("Loading objects for bucket", slog.String("bucket", bucketName))
-	a.statusBar.SetText(fmt.Sprintf("Loading objects from %s...", bucketName))
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText(fmt.Sprintf("Loading objects from %s...", bucketName))
+	}, true)
 
 	objects, err := a.s3Client.ListObjects(context.TODO(), bucketName)
 	if err != nil {
 		slog.Error("Failed to load objects", slogx.Error(err), slog.String("bucket", bucketName))
-		a.statusBar.SetText(fmt.Sprintf("Error loading %s: %v", bucketName, err))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error loading %s: %v", bucketName, err))
+		}, true)
 		return
 	}
 
 	a.treeData.bucketData[bucketName] = objects
-	a.tree.Refresh()
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.tree.Refresh()
+	}, true)
 
 	slog.Info("Loaded objects", slog.String("bucket", bucketName), slog.Int("count", len(objects)))
-	a.statusBar.SetText(fmt.Sprintf("Loaded %d object(s) from %s", len(objects), bucketName))
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText(fmt.Sprintf("Loaded %d object(s) from %s", len(objects), bucketName))
+	}, true)
 }
