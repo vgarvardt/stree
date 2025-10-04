@@ -7,13 +7,18 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vgarvardt/stree/pkg/models"
 )
 
 func TestStorage(t *testing.T) {
 	ctx := t.Context()
 
-	// Create storage
-	store, err := New(ctx)
+	// Create storage with in-memory database for testing
+	store, err := New(ctx, StorageConfig{
+		DSN:   ":memory:",
+		Purge: false,
+	})
 	require.NoError(t, err, "Failed to create storage")
 	t.Cleanup(func() {
 		err := store.Close()
@@ -39,11 +44,17 @@ func TestStorage(t *testing.T) {
 	assert.Equal(t, sessionID, sessionID2, "Session ID should remain the same on update")
 
 	// Test bucket upsert
-	bucketDetails := map[string]any{
-		"VersioningEnabled": true,
-		"ObjectLockEnabled": false,
-	}
 	creationDate := time.Now()
+	bucketDetails := models.BucketDetails{
+		Bucket: models.Bucket{
+			Name:         "test-bucket",
+			CreationDate: creationDate,
+		},
+		BucketMetadata: models.BucketMetadata{
+			VersioningEnabled: true,
+			ObjectLockEnabled: false,
+		},
+	}
 	err = store.UpsertBucket(ctx, sessionID, "test-bucket", creationDate, bucketDetails)
 	require.NoError(t, err, "Failed to upsert bucket")
 
@@ -55,10 +66,10 @@ func TestStorage(t *testing.T) {
 	assert.False(t, bucket.CreationDate.IsZero(), "Bucket creation date should not be zero")
 
 	// Verify bucket details JSON
-	var retrievedDetails map[string]any
+	var retrievedDetails models.BucketDetails
 	err = json.Unmarshal(bucket.Details, &retrievedDetails)
 	require.NoError(t, err, "Failed to unmarshal bucket details")
-	assert.Equal(t, true, retrievedDetails["VersioningEnabled"], "VersioningEnabled should be true")
+	assert.Equal(t, true, retrievedDetails.VersioningEnabled, "VersioningEnabled should be true")
 
 	// Test listing buckets
 	buckets, err := store.GetBucketsBySession(ctx, sessionID)

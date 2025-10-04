@@ -21,6 +21,8 @@ var (
 
 func main() {
 	var verboseLogs bool
+	var storageDSN string
+	var storagePurge bool
 
 	rootCmd := &cobra.Command{
 		Use:     "stree [command]",
@@ -31,7 +33,12 @@ func main() {
 			logger := logging.BuildLogger(verboseLogs)
 			slog.SetDefault(logger)
 
-			stor, err := storage.New(ctx)
+			storageConfig := storage.StorageConfig{
+				DSN:   storageDSN,
+				Purge: storagePurge,
+			}
+
+			stor, err := storage.New(ctx, storageConfig)
 			if err != nil {
 				return fmt.Errorf("could not initialize storage: %w", err)
 			}
@@ -41,7 +48,11 @@ func main() {
 				}
 			}()
 
-			logger.Info("Starting main GUI app", slog.String("version", version), slog.String("built", built))
+			logger.Info("Starting main GUI app",
+				slog.String("version", version),
+				slog.String("built", built),
+				slog.String("storage-dsn", storageDSN),
+				slog.Bool("storage-purge", storagePurge))
 
 			// Launch the GUI application
 			app := gui.NewApp(stor, version)
@@ -52,6 +63,8 @@ func main() {
 
 	pf := rootCmd.PersistentFlags()
 	pf.BoolVarP(&verboseLogs, "verbose", "v", false, "verbose logging")
+	pf.StringVar(&storageDSN, "storage-dsn", "./storage.db", "SQLite database file path (use ':memory:' for in-memory database)")
+	pf.BoolVar(&storagePurge, "storage-purge", false, "remove storage file before initialization (start from scratch)")
 
 	ctx := context.Background()
 	if err := rootCmd.ExecuteContext(ctx); err != nil {

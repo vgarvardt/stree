@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/vgarvardt/stree/pkg/models"
 )
+
+// StorageConfig holds configuration for storage initialization
+type StorageConfig struct {
+	DSN   string // Database connection string (e.g., "./storage.db" or ":memory:")
+	Purge bool   // If true, removes the storage file before initialization (only for file-based storage)
+}
 
 // Storage manages the SQLite database for caching S3 data
 type Storage struct {
@@ -46,12 +53,16 @@ type Object struct {
 	UpdatedAt  time.Time
 }
 
-// New creates a new Storage instance with an in-memory SQLite database
-func New(ctx context.Context) (*Storage, error) {
-	// TODO: Replace with persistent file storage
-	// For now, using in-memory database: ":memory:"
-	// Future: use file path like "file:stree.db?cache=shared&mode=rwc"
-	db, err := sql.Open("sqlite", ":memory:")
+// New creates a new Storage instance with the provided configuration
+func New(ctx context.Context, config StorageConfig) (*Storage, error) {
+	// If purge is requested and DSN is not in-memory, try to remove the file
+	if config.Purge && config.DSN != ":memory:" {
+		if err := os.Remove(config.DSN); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to purge storage file: %w", err)
+		}
+	}
+
+	db, err := sql.Open("sqlite", config.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
