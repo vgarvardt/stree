@@ -102,12 +102,16 @@ func (v *objectsListView) buildUI() fyne.CanvasObject {
 		go v.refreshObjects()
 	})
 
-	// Create toolbar
-	toolbar := container.NewBorder(
-		nil, nil,
-		container.NewHBox(v.refreshButton, widget.NewLabel("Sort:")),
-		container.NewHBox(widget.NewLabel("Filter:")),
-		container.NewHBox(v.sortSelect, v.filterSelect),
+	// Create toolbar with proper layout
+	sortLabel := widget.NewLabel("Sort:")
+	filterLabel := widget.NewLabel("Filter:")
+
+	toolbar := container.NewHBox(
+		v.refreshButton,
+		sortLabel,
+		v.sortSelect,
+		filterLabel,
+		v.filterSelect,
 	)
 
 	// Create table
@@ -134,7 +138,9 @@ func (v *objectsListView) createTable() *widget.Table {
 		},
 		// Create
 		func() fyne.CanvasObject {
-			return widget.NewLabel("Template")
+			label := widget.NewLabel("Template")
+			label.Truncation = fyne.TextTruncateEllipsis
+			return label
 		},
 		// Update
 		func(cell widget.TableCellID, obj fyne.CanvasObject) {
