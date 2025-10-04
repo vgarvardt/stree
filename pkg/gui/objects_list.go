@@ -36,6 +36,9 @@ func (a *App) showObjectsList(bucketName string) {
 		// Show window
 		modalWindow.Show()
 
+		// Initialize dropdown selections after window is shown to avoid triggering callbacks during setup
+		objectsView.initializeSelections()
+
 		// Load objects asynchronously after the window is shown
 		go objectsView.loadObjects()
 	}, false)
@@ -75,28 +78,24 @@ func (v *objectsListView) buildUI() fyne.CanvasObject {
 	v.statusBar = widget.NewLabel("Loading...")
 	statusContainer := container.NewBorder(nil, nil, widget.NewIcon(theme.InfoIcon()), nil, v.statusBar)
 
-	// Create sort dropdown
+	// Create sort dropdown with initial selection but NO callback yet
 	sortOptions := []string{
 		"Size ↓",
 		"Size ↑",
 		"Date ↓",
 		"Date ↑",
 	}
-	v.sortSelect = widget.NewSelect(sortOptions, func(selected string) {
-		go v.loadObjects()
-	})
-	v.sortSelect.SetSelected("Date ↓")
+	v.sortSelect = widget.NewSelect(sortOptions, nil) // No callback during construction
+	v.sortSelect.SetSelected("Date ↓")                // Set initial value before attaching callback
 
-	// Create filter dropdown for delete markers
+	// Create filter dropdown with initial selection but NO callback yet
 	filterOptions := []string{
 		"All",
 		"Files only",
 		"Delete markers only",
 	}
-	v.filterSelect = widget.NewSelect(filterOptions, func(selected string) {
-		go v.loadObjects()
-	})
-	v.filterSelect.SetSelected("All")
+	v.filterSelect = widget.NewSelect(filterOptions, nil) // No callback during construction
+	v.filterSelect.SetSelected("All")                     // Set initial value before attaching callback
 
 	// Create refresh button
 	v.refreshButton = widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
@@ -409,4 +408,15 @@ func (v *objectsListView) refreshObjects() {
 
 	// Reload
 	v.loadObjects()
+}
+
+// initializeSelections sets the initial selections for dropdowns without triggering callbacks
+func (v *objectsListView) initializeSelections() {
+	// Initial values are already set in buildUI, now attach the callbacks
+	v.sortSelect.OnChanged = func(selected string) {
+		go v.loadObjects()
+	}
+	v.filterSelect.OnChanged = func(selected string) {
+		go v.loadObjects()
+	}
 }
