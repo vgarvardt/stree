@@ -43,6 +43,9 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 
 	slog.Info("Refreshing objects metadata", slog.String("bucket", bucketName))
 
+	// Close objects window if it's open to prevent conflicts with stale data
+	a.closeObjectsWindow()
+
 	// Create a cancellable context for this operation
 	ctx, cancel := context.WithCancel(a.ctx)
 	// Don't use defer cancel() here - let the cancel button handle it

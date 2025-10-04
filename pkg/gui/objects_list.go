@@ -23,9 +23,23 @@ const objectsListLimit = 1000
 func (a *App) showObjectsList(bucketName string) {
 	// Create and show the window on the Fyne UI thread
 	a.fyneApp.Driver().DoFromGoroutine(func() {
+		// If an objects window is already open, close it first
+		if a.objectsWindow != nil {
+			a.objectsWindow.Close()
+			a.objectsWindow = nil
+		}
+
 		// Create the modal window
 		modalWindow := a.fyneApp.NewWindow(fmt.Sprintf("Objects @ %s", bucketName))
 		modalWindow.Resize(fyne.NewSize(1200, 700))
+
+		// Store reference to the objects window
+		a.objectsWindow = modalWindow
+
+		// Set up close handler to clean up reference
+		modalWindow.SetOnClosed(func() {
+			a.objectsWindow = nil
+		})
 
 		// Create the objects list view
 		objectsView := newObjectsListView(a, modalWindow, bucketName)

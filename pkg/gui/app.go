@@ -83,6 +83,10 @@ type App struct {
 
 	s3Client  *s3client.Client
 	sessionID int64
+
+	// Track the objects list window to ensure modality
+	objectsWindow fyne.Window
+	mainContent   fyne.CanvasObject
 }
 
 // TreeData holds the hierarchical data for the tree widget
@@ -501,6 +505,9 @@ func (a *App) createTree() *widget.Tree {
 func (a *App) refreshBuckets() {
 	slog.Info("Refreshing S3 buckets")
 
+	// Close objects window if it's open to prevent conflicts
+	a.closeObjectsWindow()
+
 	// Close all open branches to reset the tree state
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.CloseAllBranches()
@@ -519,6 +526,16 @@ func (a *App) refreshBuckets() {
 
 	// Reload buckets
 	a.loadBuckets()
+}
+
+// closeObjectsWindow closes the objects list window if it's open
+func (a *App) closeObjectsWindow() {
+	if a.objectsWindow != nil {
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.objectsWindow.Close()
+			a.objectsWindow = nil
+		}, true)
+	}
 }
 
 // showBucketContextMenu displays a context menu for a bucket
