@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS objects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_objects_bucket_id ON objects(bucket_id);
+
+-- JSON field indexes for efficient filtering and ordering
+CREATE INDEX IF NOT EXISTS idx_objects_size ON objects(json_extract(properties, '$.size'));
+CREATE INDEX IF NOT EXISTS idx_objects_last_modified ON objects(json_extract(properties, '$.last_modified'));
+CREATE INDEX IF NOT EXISTS idx_objects_is_delete_marker ON objects(json_extract(properties, '$.is_delete_marker'));
 `
 
 	_, err := s.db.ExecContext(ctx, schema)
@@ -346,6 +351,82 @@ func (s *Storage) DeleteObjectsByBucket(ctx context.Context, bucketID int64) err
 		return fmt.Errorf("failed to delete objects: %w", err)
 	}
 	return nil
+}
+
+// OrderByField specifies which field to order objects by
+type OrderByField string
+
+const (
+	OrderByID           OrderByField = ""
+	OrderBySize         OrderByField = "size"
+	OrderByLastModified OrderByField = "last_modified"
+)
+
+// ObjectListOptions specifies filtering, ordering, and pagination options for listing objects
+type ObjectListOptions struct {
+	Limit              int          // Maximum number of objects to return (0 = no limit)
+	OrderBy            OrderByField // Field to order by
+	OrderDesc          bool         // Order descending (true) or ascending (false)
+	FilterDeleteMarker *bool        // Filter by is_delete_marker: nil = all, true = only delete markers, false = exclude delete markers
+}
+
+// ListObjectsByBucket retrieves objects for a bucket with filtering, ordering, and pagination
+func (s *Storage) ListObjectsByBucket(ctx context.Context, bucketID int64, opts ObjectListOptions) ([]Object, error) {
+	query := `SELECT id, bucket_id, properties, created_at, updated_at FROM objects WHERE bucket_id = ?`
+	args := []any{bucketID}
+
+	// Add filter for delete markers if specified
+	if opts.FilterDeleteMarker != nil {
+		if *opts.FilterDeleteMarker {
+			query += ` AND json_extract(properties, '$.is_delete_marker') = 1`
+		} else {
+			query += ` AND json_extract(properties, '$.is_delete_marker') = 0`
+		}
+	}
+
+	// Add ordering
+	orderDir := "ASC"
+	if opts.OrderDesc {
+		orderDir = "DESC"
+	}
+
+	switch opts.OrderBy {
+	case OrderBySize:
+		query += ` ORDER BY json_extract(properties, '$.size') ` + orderDir
+	case OrderByLastModified:
+		query += ` ORDER BY json_extract(properties, '$.last_modified') ` + orderDir
+	case OrderByID:
+		fallthrough
+	default:
+		query += ` ORDER BY id ` + orderDir
+	}
+
+	// Add limit
+	if opts.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, opts.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query objects: %w", err)
+	}
+	defer rows.Close()
+
+	var objects []Object
+	for rows.Next() {
+		var obj Object
+		if err := rows.Scan(&obj.ID, &obj.BucketID, &obj.Properties, &obj.CreatedAt, &obj.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan object: %w", err)
+		}
+		objects = append(objects, obj)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return objects, nil
 }
 
 // BulkInsertObjectVersions inserts multiple object versions in a single transaction
