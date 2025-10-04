@@ -542,6 +542,12 @@ func (a *App) showBucketContextMenu(bucketName string, position fyne.Position) {
 
 // showObjectsContextMenu displays a context menu for the objects metadata
 func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketMetadata, position fyne.Position) {
+	// Create list item to open the objects list window
+	listItem := fyne.NewMenuItem("List", func() {
+		a.showObjectsList(bucketName)
+	})
+	listItem.Icon = theme.ListIcon()
+
 	// Create menu items for copying objects count
 	copyObjectsAsIsItem := fyne.NewMenuItem("Copy objects as is", func() {
 		objectsCount := fmt.Sprintf("%d", metadata.ObjectsCount)
@@ -584,6 +590,8 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 
 	// Create and show the popup menu with separator
 	menu := fyne.NewMenu("",
+		listItem,
+		fyne.NewMenuItemSeparator(),
 		copyObjectsAsIsItem,
 		copyObjectsFormattedItem,
 		copySizeAsIsItem,
