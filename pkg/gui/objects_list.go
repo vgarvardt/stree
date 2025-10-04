@@ -21,21 +21,24 @@ const objectsListLimit = 1000
 
 // showObjectsList opens a modal window displaying objects in the bucket
 func (a *App) showObjectsList(bucketName string) {
-	// Create the modal window
-	modalWindow := a.fyneApp.NewWindow(fmt.Sprintf("Objects @ %s", bucketName))
-	modalWindow.Resize(fyne.NewSize(1200, 700))
+	// Create and show the window on the Fyne UI thread
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		// Create the modal window
+		modalWindow := a.fyneApp.NewWindow(fmt.Sprintf("Objects @ %s", bucketName))
+		modalWindow.Resize(fyne.NewSize(1200, 700))
 
-	// Create the objects list view
-	objectsView := newObjectsListView(a, modalWindow, bucketName)
+		// Create the objects list view
+		objectsView := newObjectsListView(a, modalWindow, bucketName)
 
-	// Set window content
-	modalWindow.SetContent(objectsView.buildUI())
+		// Set window content
+		modalWindow.SetContent(objectsView.buildUI())
 
-	// Load objects
-	go objectsView.loadObjects()
+		// Show window
+		modalWindow.Show()
 
-	// Show window
-	modalWindow.Show()
+		// Load objects asynchronously after the window is shown
+		go objectsView.loadObjects()
+	}, false)
 }
 
 // objectsListView manages the objects list UI state

@@ -467,6 +467,10 @@ func (a *App) createTree() *widget.Tree {
 					tappable.onSecondaryTap = func(position fyne.Position) {
 						a.showObjectsContextMenu(bucketName, metadata, position)
 					}
+					// Set double-click handler to open objects list
+					tappable.onDoubleTap = func() {
+						go a.showObjectsList(bucketName)
+					}
 				default:
 					label.SetText("Unknown field")
 					icon.SetResource(theme.QuestionIcon())
