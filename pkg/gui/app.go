@@ -665,10 +665,27 @@ func (a *App) loadBuckets() {
 	// Sort buckets according to current sort mode
 	a.sortBuckets()
 
-	// Store all buckets to storage using BucketDetails
+	// Store all buckets to storage, preserving existing metadata
 	for _, bucket := range buckets {
-		details := models.NewBucketDetails(bucket, nil)
-		if err := a.storage.UpsertBucket(context.TODO(), a.sessionID, bucket.Name, bucket.CreationDate, details); err != nil {
+		// Try to load existing bucket details from storage to preserve metadata
+		var details models.BucketDetails
+		storedBucket, err := a.storage.GetBucket(a.ctx, a.sessionID, bucket.Name)
+		if err == nil && storedBucket != nil {
+			// Bucket exists in storage - deserialize and preserve existing metadata
+			if err := json.Unmarshal(storedBucket.Details, &details); err == nil {
+				// Update the basic bucket info but keep the metadata
+				details.Name = bucket.Name
+				details.CreationDate = bucket.CreationDate
+			} else {
+				// Failed to unmarshal, create new details
+				details = models.NewBucketDetails(bucket, nil)
+			}
+		} else {
+			// Bucket doesn't exist in storage yet, create new details
+			details = models.NewBucketDetails(bucket, nil)
+		}
+
+		if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucket.Name, bucket.CreationDate, details); err != nil {
 			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", bucket.Name))
 		}
 	}

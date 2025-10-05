@@ -51,5 +51,5 @@ func (bd BucketDetails) ToMetadata() *BucketMetadata {
 
 // HasMetadata checks if the bucket details contain metadata (not just basic info)
 func (bd BucketDetails) HasMetadata() bool {
-	return bd.VersioningStatus != "" || bd.ObjectLockEnabled || bd.RetentionEnabled
+	return bd.VersioningStatus != "" || bd.ObjectLockEnabled || bd.RetentionEnabled || bd.ObjectsRefreshedAt != nil
 }
