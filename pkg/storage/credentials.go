@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -27,7 +28,7 @@ func NewCredentialStore() *CredentialStore {
 
 // StoreSecretKey stores the S3 secret key for a bookmark in the OS keychain
 // The key is stored as "bookmark-{bookmarkID}"
-func (cs *CredentialStore) StoreSecretKey(ctx context.Context, bookmarkID int64, secretKey string) error {
+func (cs *CredentialStore) StoreSecretKey(_ context.Context, bookmarkID int64, secretKey string) error {
 	key := fmt.Sprintf("bookmark-%d", bookmarkID)
 	if err := keyring.Set(cs.service, key, secretKey); err != nil {
 		return fmt.Errorf("failed to store secret key in keychain: %w", err)
@@ -37,11 +38,11 @@ func (cs *CredentialStore) StoreSecretKey(ctx context.Context, bookmarkID int64,
 }
 
 // GetSecretKey retrieves the S3 secret key for a bookmark from the OS keychain
-func (cs *CredentialStore) GetSecretKey(ctx context.Context, bookmarkID int64) (string, error) {
+func (cs *CredentialStore) GetSecretKey(_ context.Context, bookmarkID int64) (string, error) {
 	key := fmt.Sprintf("bookmark-%d", bookmarkID)
 	secret, err := keyring.Get(cs.service, key)
 	if err != nil {
-		if err == keyring.ErrNotFound {
+		if errors.Is(err, keyring.ErrNotFound) {
 			return "", fmt.Errorf("secret key not found for bookmark %d", bookmarkID)
 		}
 		return "", fmt.Errorf("failed to get secret key from keychain: %w", err)
@@ -51,11 +52,11 @@ func (cs *CredentialStore) GetSecretKey(ctx context.Context, bookmarkID int64) (
 }
 
 // DeleteSecretKey removes the S3 secret key for a bookmark from the OS keychain
-func (cs *CredentialStore) DeleteSecretKey(ctx context.Context, bookmarkID int64) error {
+func (cs *CredentialStore) DeleteSecretKey(_ context.Context, bookmarkID int64) error {
 	key := fmt.Sprintf("bookmark-%d", bookmarkID)
 	if err := keyring.Delete(cs.service, key); err != nil {
 		// Don't fail if the key doesn't exist
-		if err == keyring.ErrNotFound {
+		if errors.Is(err, keyring.ErrNotFound) {
 			slog.Debug("Secret key not found in keychain (already deleted?)", slog.Int64("bookmark_id", bookmarkID))
 			return nil
 		}
@@ -66,7 +67,7 @@ func (cs *CredentialStore) DeleteSecretKey(ctx context.Context, bookmarkID int64
 }
 
 // TestKeychain tests if the keychain is accessible and working
-func (cs *CredentialStore) TestKeychain(ctx context.Context) error {
+func (cs *CredentialStore) TestKeychain(_ context.Context) error {
 	testKey := "test-key"
 	testValue := "test-value"
 
@@ -88,6 +89,6 @@ func (cs *CredentialStore) TestKeychain(ctx context.Context) error {
 	// Clean up
 	_ = keyring.Delete(cs.service, testKey)
 
-	slog.Debug("Keychain test successful")
+	slog.Info("Keychain test successful")
 	return nil
 }
