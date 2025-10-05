@@ -17,7 +17,7 @@ import (
 // schemaVersion represents the current database schema version.
 // Increment this constant when making backward-incompatible changes to the schema.
 // When the version doesn't match, the database will be recreated from scratch.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // Config holds configuration for storage initialization
 type Config struct {
@@ -209,6 +209,20 @@ CREATE INDEX IF NOT EXISTS idx_objects_bucket_id ON objects(bucket_id);
 CREATE INDEX IF NOT EXISTS idx_objects_size ON objects(json_extract(properties, '$.size'));
 CREATE INDEX IF NOT EXISTS idx_objects_last_modified ON objects(json_extract(properties, '$.last_modified'));
 CREATE INDEX IF NOT EXISTS idx_objects_is_delete_marker ON objects(json_extract(properties, '$.is_delete_marker'));
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	url TEXT NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+	UNIQUE(session_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookmarks_session_id ON bookmarks(session_id);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_name ON bookmarks(name);
 `
 
 	_, err := s.db.ExecContext(ctx, schema)
