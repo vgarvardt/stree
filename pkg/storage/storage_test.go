@@ -15,7 +15,7 @@ func TestStorage(t *testing.T) {
 	ctx := t.Context()
 
 	// Create storage with in-memory database for testing
-	store, err := New(ctx, StorageConfig{
+	store, err := New(ctx, Config{
 		DSN:   ":memory:",
 		Purge: false,
 	})

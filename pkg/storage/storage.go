@@ -14,8 +14,13 @@ import (
 	"github.com/vgarvardt/stree/pkg/models"
 )
 
-// StorageConfig holds configuration for storage initialization
-type StorageConfig struct {
+// schemaVersion represents the current database schema version.
+// Increment this constant when making backward-incompatible changes to the schema.
+// When the version doesn't match, the database will be recreated from scratch.
+const schemaVersion = 1
+
+// Config holds configuration for storage initialization
+type Config struct {
 	DSN   string // Database connection string (e.g., "./storage.db" or ":memory:")
 	Purge bool   // If true, removes the storage file before initialization (only for file-based storage)
 }
@@ -54,12 +59,10 @@ type Object struct {
 }
 
 // New creates a new Storage instance with the provided configuration
-func New(ctx context.Context, config StorageConfig) (*Storage, error) {
-	// If purge is requested and DSN is not in-memory, try to remove the file
-	if config.Purge && config.DSN != ":memory:" {
-		if err := os.Remove(config.DSN); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to purge storage file: %w", err)
-		}
+func New(ctx context.Context, config Config) (*Storage, error) {
+	// Purge database file if needed (version mismatch or explicit purge request)
+	if err := purgeIfNeeded(ctx, config); err != nil {
+		return nil, fmt.Errorf("failed to purge database: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", config.DSN)
@@ -75,6 +78,7 @@ func New(ctx context.Context, config StorageConfig) (*Storage, error) {
 
 	// Test connection
 	if err := db.PingContext(ctx); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -86,7 +90,80 @@ func New(ctx context.Context, config StorageConfig) (*Storage, error) {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
+	// Set the schema version
+	if err := storage.setSchemaVersion(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set schema version: %w", err)
+	}
+
 	return storage, nil
+}
+
+// purgeIfNeeded checks if the database file needs to be purged and removes it if necessary
+// Returns nil if no purge is needed or if purge was successful
+func purgeIfNeeded(ctx context.Context, config Config) error {
+	// In-memory databases cannot be purged, skip all checks
+	if config.DSN == ":memory:" {
+		return nil
+	}
+
+	// Check if we need to purge the database file
+	shouldPurge := config.Purge
+
+	// If not explicitly purging, check if database version mismatches
+	if !shouldPurge {
+		mismatch, err := isDBVersionMismatch(ctx, config.DSN)
+		if err != nil {
+			return fmt.Errorf("failed to check database version: %w", err)
+		}
+		shouldPurge = mismatch
+	}
+
+	// Purge the database file if needed
+	if shouldPurge {
+		if err := os.Remove(config.DSN); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove storage file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// isDBVersionMismatch checks if the database file exists and has a mismatched version
+// Returns true if the database should be purged and recreated
+func isDBVersionMismatch(ctx context.Context, dsn string) (bool, error) {
+	// Check if file exists
+	if _, err := os.Stat(dsn); os.IsNotExist(err) {
+		// File doesn't exist, no mismatch (will be created fresh)
+		return false, nil
+	}
+
+	// Open database temporarily to check version
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return false, fmt.Errorf("failed to open database for version check: %w", err)
+	}
+	defer db.Close()
+
+	// Try to read the version
+	var version int
+	err = db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version)
+	if err != nil {
+		// If we can't read the version, assume it's corrupted or incompatible
+		return true, nil
+	}
+
+	// Return true if version doesn't match (needs purge)
+	return version != schemaVersion, nil
+}
+
+// setSchemaVersion sets the current schema version in the database
+func (s *Storage) setSchemaVersion(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion))
+	if err != nil {
+		return fmt.Errorf("failed to set schema version: %w", err)
+	}
+	return nil
 }
 
 // initSchema creates the database tables

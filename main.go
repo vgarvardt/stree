@@ -33,7 +33,7 @@ func main() {
 			logger := logging.BuildLogger(verboseLogs)
 			slog.SetDefault(logger)
 
-			storageConfig := storage.StorageConfig{
+			storageConfig := storage.Config{
 				DSN:   storageDSN,
 				Purge: storagePurge,
 			}
