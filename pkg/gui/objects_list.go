@@ -328,44 +328,10 @@ func (v *objectsListView) loadObjects() {
 		opts.FilterDeleteMarker = &deleteMarker
 	}
 
-	// Try to load from storage first
+	// Load from storage only - never fetch from S3
 	storageObjects, err := v.app.storage.ListObjectsByBucket(v.app.ctx, v.bucketID, opts)
 	if err != nil {
 		slog.Error("Failed to list objects from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
-	}
-
-	// If we have objects in storage, use them
-	if len(storageObjects) > 0 {
-		slog.Info("Loading objects from storage", slog.String("bucket", v.bucketName), slog.Int("count", len(storageObjects)))
-
-		// Deserialize objects
-		v.objects = make([]models.ObjectVersion, 0, len(storageObjects))
-		for _, obj := range storageObjects {
-			var version models.ObjectVersion
-			if err := json.Unmarshal(obj.Properties, &version); err != nil {
-				slog.Warn("Failed to unmarshal object version", slogx.Error(err))
-				continue
-			}
-			v.objects = append(v.objects, version)
-		}
-
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
-			v.table.Refresh()
-			v.statusBar.SetText(fmt.Sprintf("Loaded %d object(s) from cache", len(v.objects)))
-			v.refreshButton.Enable()
-		}, false)
-		return
-	}
-
-	// No objects in storage, fetch from S3
-	slog.Info("Fetching objects from S3", slog.String("bucket", v.bucketName))
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
-		v.statusBar.SetText("Fetching objects from S3...")
-	}, true)
-
-	// Fetch from S3
-	if err := v.fetchFromS3(); err != nil {
-		slog.Error("Failed to fetch objects from S3", slogx.Error(err), slog.String("bucket", v.bucketName))
 		v.app.fyneApp.Driver().DoFromGoroutine(func() {
 			v.statusBar.SetText(fmt.Sprintf("Error: %v", err))
 			v.refreshButton.Enable()
@@ -373,61 +339,46 @@ func (v *objectsListView) loadObjects() {
 		return
 	}
 
-	// Reload from storage with filters applied
-	v.loadObjects()
-}
-
-// fetchFromS3 fetches all objects from S3 and stores them
-func (v *objectsListView) fetchFromS3() error {
-	// Use app context to ensure we're using the same storage instance
-	ctx := v.app.ctx
-
-	// List all object versions with pagination
-	var allVersions []models.ObjectVersion
-	pagination := &models.Pagination{}
-
-	for {
-		versions, nextPagination, err := v.app.s3Client.ListObjectVersions(ctx, v.bucketName, pagination)
-		if err != nil {
-			return fmt.Errorf("failed to list object versions: %w", err)
-		}
-
-		allVersions = append(allVersions, versions...)
-
-		// Check if there are more pages
-		if nextPagination == nil || !nextPagination.IsTruncated {
-			break
-		}
-
-		pagination = nextPagination
+	// Check if we have objects in storage
+	if len(storageObjects) == 0 {
+		slog.Info("No objects found in storage", slog.String("bucket", v.bucketName))
+		v.objects = []models.ObjectVersion{}
+		v.app.fyneApp.Driver().DoFromGoroutine(func() {
+			v.table.Refresh()
+			v.statusBar.SetText("No objects in cache. Use 'Refresh' on the Objects metadata in the tree to load objects.")
+			v.refreshButton.Enable()
+		}, false)
+		return
 	}
 
-	slog.Info("Fetched objects from S3", slog.String("bucket", v.bucketName), slog.Int("count", len(allVersions)))
+	slog.Info("Loading objects from storage", slog.String("bucket", v.bucketName), slog.Int("count", len(storageObjects)))
 
-	// Store in database
-	if err := v.app.storage.BulkInsertObjectVersions(ctx, v.bucketID, allVersions); err != nil {
-		return fmt.Errorf("failed to store objects: %w", err)
+	// Deserialize objects
+	v.objects = make([]models.ObjectVersion, 0, len(storageObjects))
+	for _, obj := range storageObjects {
+		var version models.ObjectVersion
+		if err := json.Unmarshal(obj.Properties, &version); err != nil {
+			slog.Warn("Failed to unmarshal object version", slogx.Error(err))
+			continue
+		}
+		v.objects = append(v.objects, version)
 	}
-
-	return nil
-}
-
-// refreshObjects invalidates cache and reloads objects
-func (v *objectsListView) refreshObjects() {
-	slog.Info("Refreshing objects list", slog.String("bucket", v.bucketName))
 
 	v.app.fyneApp.Driver().DoFromGoroutine(func() {
-		v.statusBar.SetText("Refreshing objects...")
-		v.refreshButton.Disable()
+		v.table.Refresh()
+		v.statusBar.SetText(fmt.Sprintf("Loaded %d object(s) from cache", len(v.objects)))
+		v.refreshButton.Enable()
+	}, false)
+}
+
+// refreshObjects clears the current view and instructs user to refresh from the main tree
+func (v *objectsListView) refreshObjects() {
+	slog.Info("Refresh requested for objects list", slog.String("bucket", v.bucketName))
+
+	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+		v.statusBar.SetText("To refresh objects, use 'Refresh' on the Objects metadata in the main tree view.")
+		v.refreshButton.Enable()
 	}, true)
-
-	// Delete objects from storage
-	if err := v.app.storage.DeleteObjectsByBucket(v.app.ctx, v.bucketID); err != nil {
-		slog.Warn("Failed to delete objects from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
-	}
-
-	// Reload
-	v.loadObjects()
 }
 
 // initializeSelections sets the initial selections for dropdowns without triggering callbacks
