@@ -79,6 +79,12 @@ func (a *App) refreshBookmarksList() {
 
 // connectToBookmark establishes connection using the specified bookmark
 func (a *App) connectToBookmark(bookmarkTitle string) {
+	// Check if already connected to this bookmark
+	if a.activeBookmark != nil && a.activeBookmark.Title == bookmarkTitle {
+		slog.Debug("Already connected to bookmark", slog.String("title", bookmarkTitle))
+		return
+	}
+
 	// Find the bookmark by title
 	bookmarks, err := a.storage.ListBookmarks(a.ctx)
 	if err != nil {
@@ -166,7 +172,7 @@ func (a *App) connectToBookmark(bookmarkTitle string) {
 		slog.Int64("session-id", sessionID),
 	)
 
-	// Update selection
+	// Update selection (this may trigger OnChanged, but the check at the top will prevent reconnection)
 	a.bookmarkSelect.SetSelected(bookmark.Title)
 
 	// Load buckets
