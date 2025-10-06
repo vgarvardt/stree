@@ -265,10 +265,15 @@ func (a *App) fetchAndStoreObjectVersions(ctx context.Context, bucketName string
 
 // showRefreshProgressModal displays a modal dialog with progress information
 func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelFunc, progressChan <-chan refreshProgress, doneChan <-chan refreshResult) {
+	startTime := time.Now()
+
 	// Create progress labels
 	phaseLabel := widget.NewLabel("Initializing...")
 	elapsedLabel := widget.NewLabel("Elapsed: 0s")
 	statsLabel := widget.NewLabel("")
+
+	// Track the latest progress state
+	var latestProgress refreshProgress
 
 	// Create cancel button
 	var dialog *widget.PopUp
@@ -293,29 +298,52 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 	dialog = widget.NewModalPopUp(content, a.window.Canvas())
 	dialog.Show()
 
-	// Start goroutine to handle progress updates
+	// Create a ticker that fires every second for UI updates
+	ticker := time.NewTicker(time.Second)
+
+	// Helper function to update the UI with current state
+	updateUI := func() {
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			// Always update elapsed time with current time
+			elapsed := time.Since(startTime)
+			elapsedLabel.SetText(fmt.Sprintf("Elapsed: %s", elapsed.Round(time.Second)))
+
+			// Update phase if we have it
+			if latestProgress.currentPhase != "" {
+				phaseLabel.SetText(latestProgress.currentPhase)
+			}
+
+			// Update stats if we have data
+			if latestProgress.fetchedCount > 0 {
+				statsText := fmt.Sprintf("Fetched: %s versions\nLatest: %s objects (%s)\nDelete markers: %s",
+					humanize.Comma(int64(latestProgress.fetchedCount)),
+					humanize.Comma(latestProgress.latestVersionCount),
+					humanize.Bytes(uint64(latestProgress.latestVersionSize)),
+					humanize.Comma(latestProgress.deleteMarkerCount),
+				)
+				statsLabel.SetText(statsText)
+			} else {
+				statsLabel.SetText("")
+			}
+			dialog.Refresh()
+		}, false)
+	}
+
+	// Start goroutine to handle progress updates and ticker
 	go func() {
+		defer ticker.Stop() // Stop ticker when goroutine exits
+
 		for {
 			select {
 			case progress := <-progressChan:
-				// Update UI on main thread
-				a.fyneApp.Driver().DoFromGoroutine(func() {
-					phaseLabel.SetText(progress.currentPhase)
-					elapsedLabel.SetText(fmt.Sprintf("Elapsed: %s", progress.elapsed.Round(time.Second)))
+				// Store latest progress data
+				latestProgress = progress
+				// Update UI immediately when new data arrives
+				updateUI()
 
-					if progress.fetchedCount > 0 {
-						statsText := fmt.Sprintf("Fetched: %s versions\nLatest: %s objects (%s)\nDelete markers: %s",
-							humanize.Comma(int64(progress.fetchedCount)),
-							humanize.Comma(progress.latestVersionCount),
-							humanize.Bytes(uint64(progress.latestVersionSize)),
-							humanize.Comma(progress.deleteMarkerCount),
-						)
-						statsLabel.SetText(statsText)
-					} else {
-						statsLabel.SetText("")
-					}
-					dialog.Refresh()
-				}, false)
+			case <-ticker.C:
+				// Update UI every second even if no new data arrived
+				updateUI()
 
 			case result := <-doneChan:
 				// Close dialog and update status
@@ -342,7 +370,7 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 						slog.Error("Refresh operation failed", slog.String("bucket", bucketName), slogx.Error(result.err))
 					}
 				}, false)
-				return
+				return // This exits the goroutine, triggering defer ticker.Stop()
 			}
 		}
 	}()
