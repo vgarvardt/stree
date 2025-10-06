@@ -48,6 +48,12 @@ func main() {
 				}
 			}()
 
+			credStore := storage.NewCredentialStore()
+			// Test keychain availability (optional, logs warnings if unavailable)
+			if err := credStore.TestKeychain(ctx); err != nil {
+				return fmt.Errorf("could not ensure credentials store: %w", err)
+			}
+
 			logger.Info("Starting main GUI app",
 				slog.String("version", version),
 				slog.String("built", built),
@@ -55,9 +61,9 @@ func main() {
 				slog.Bool("storage-purge", storagePurge))
 
 			// Launch the GUI application
-			app := gui.NewApp(stor, version)
+			app := gui.NewApp(stor, credStore, version)
 
-			return app.Run(ctx, verboseLogs)
+			return app.Run(ctx)
 		},
 	}
 

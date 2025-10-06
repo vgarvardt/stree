@@ -3,7 +3,6 @@ package gui
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -81,6 +80,11 @@ type App struct {
 	s3Client  *s3client.Client
 	sessionID int64
 
+	// Bookmark management
+	credStore      *storage.CredentialStore
+	activeBookmark *models.Bookmark
+	bookmarkSelect *widget.Select
+
 	// Track the objects list window to ensure modality
 	objectsWindow fyne.Window
 	mainContent   fyne.CanvasObject
@@ -95,11 +99,12 @@ type TreeData struct {
 }
 
 // NewApp creates a new GUI application
-func NewApp(stor *storage.Storage, version string) *App {
+func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, version string) *App {
 	return &App{
-		fyneApp: app.New(),
-		version: version,
-		storage: stor,
+		fyneApp:   app.New(),
+		version:   version,
+		storage:   stor,
+		credStore: credStore,
 		treeData: &TreeData{
 			buckets:        []models.Bucket{},
 			bucketMetadata: make(map[string]*models.BucketMetadata),
@@ -110,33 +115,24 @@ func NewApp(stor *storage.Storage, version string) *App {
 }
 
 // Run starts the GUI application
-func (a *App) Run(ctx context.Context, verbose bool) error {
-	s3Cfg := s3client.Config{
-		Endpoint:     s3Endpoint,
-		AccessKey:    s3AccessKeyID,
-		SecretKey:    s3SecretKey,
-		SessionToken: s3SessionToken,
-		Region:       s3Region,
-		Debug:        verbose,
-	}
-	s3Client, err := s3client.NewClient(ctx, s3Cfg, a.version)
-	if err != nil {
-		return fmt.Errorf("failed to create S3 client: %w", err)
-	}
-
-	if a.sessionID, err = a.storage.UpsertSession(ctx, s3Cfg.String()); err != nil {
-		return fmt.Errorf("failed to store session to storage: %w", err)
-	}
-	slog.Info("Initialised storage session", slog.Int64("session-id", a.sessionID))
-
-	a.s3Client = s3Client
+func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 
 	a.window = a.fyneApp.NewWindow("S3 Tree Browser")
 	a.window.Resize(fyne.NewSize(800, 600))
 
-	// Create top toolbar with refresh button (icon-only)
+	// Initialize bookmark selector
+	bookmarkSelector := a.initBookmarkSelector()
+
+	// Load bookmarks list
+	a.refreshBookmarksList()
+
+	// Create top toolbar with bookmark selector on the left
 	refreshButton := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
+		if a.s3Client == nil {
+			a.statusBar.SetText("Not connected. Select a bookmark to connect.")
+			return
+		}
 		go a.refreshBuckets()
 	})
 
@@ -171,16 +167,20 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 		a.tree.Refresh()
 	}
 
-	buttonsContainer := container.NewHBox(refreshButton, sortOptions)
+	// Left side: bookmark selector
+	leftToolbar := container.NewHBox(bookmarkSelector, refreshButton, sortOptions)
 
-	// Simple toolbar with everything aligned to the left
-	toolbar := container.NewAdaptiveGrid(2,
-		buttonsContainer,
+	// Right side: search
+	toolbar := container.NewBorder(
+		nil,
+		nil,
+		leftToolbar,
 		searchEntry,
+		nil,
 	)
 
 	// Create status bar
-	a.statusBar = widget.NewLabel("Ready")
+	a.statusBar = widget.NewLabel("Not connected. Select a bookmark to connect.")
 	statusContainer := container.NewBorder(nil, nil, widget.NewIcon(theme.InfoIcon()), nil, a.statusBar)
 
 	// Create tree widget
@@ -199,8 +199,7 @@ func (a *App) Run(ctx context.Context, verbose bool) error {
 
 	a.window.SetContent(content)
 
-	// Load buckets asynchronously
-	go a.loadBuckets()
+	// Don't load buckets automatically - wait for bookmark selection
 
 	a.window.ShowAndRun()
 
