@@ -29,7 +29,7 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 
 	// Create the dialog window
 	dialogWindow := a.fyneApp.NewWindow(title)
-	dialogWindow.Resize(fyne.NewSize(500, 300))
+	dialogWindow.Resize(fyne.NewSize(500, 330))
 	dialogWindow.CenterOnScreen()
 
 	// Create form fields
@@ -40,13 +40,13 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 	endpointEntry.SetPlaceHolder("http://localhost:9000")
 
 	regionEntry := widget.NewEntry()
-	regionEntry.SetPlaceHolder("us-east-1")
+	regionEntry.SetPlaceHolder("eu-central-2")
 
 	accessKeyEntry := widget.NewEntry()
-	accessKeyEntry.SetPlaceHolder("AKIAIOSFODNN7EXAMPLE")
+	accessKeyEntry.SetPlaceHolder("")
 
 	secretKeyEntry := widget.NewPasswordEntry()
-	secretKeyEntry.SetPlaceHolder("wJalrXUtnFEMI/K7MDENG/bPxRfiCY...")
+	secretKeyEntry.SetPlaceHolder("")
 
 	sessionTokenEntry := widget.NewEntry()
 	sessionTokenEntry.SetPlaceHolder("Optional session token")
