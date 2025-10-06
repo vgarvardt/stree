@@ -208,6 +208,7 @@ func (a *App) loadBuckets() {
 	// Sort buckets according to current sort mode
 	a.sortBuckets()
 
+	slog.Info("Storing buckets to the storage", slog.Int("count", len(buckets)))
 	// Store all buckets to storage, preserving existing metadata
 	for _, bucket := range buckets {
 		// Try to load existing bucket details from storage to preserve metadata

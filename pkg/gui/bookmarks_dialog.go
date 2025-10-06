@@ -131,7 +131,7 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 				AccessKey:    accessKeyEntry.Text,
 				SecretKey:    secretKeyEntry.Text,
 				SessionToken: sessionTokenEntry.Text,
-				Debug:        false,
+				Debug:        a.verbose,
 			}
 
 			client, err := s3client.NewClient(testCtx, cfg, a.version)

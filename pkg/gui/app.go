@@ -76,6 +76,7 @@ type App struct {
 	ctx     context.Context
 	storage *storage.Storage
 	version string
+	verbose bool
 
 	s3Client  *s3client.Client
 	sessionID int64
@@ -99,10 +100,11 @@ type TreeData struct {
 }
 
 // NewApp creates a new GUI application
-func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, version string) *App {
+func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, verbose bool, version string) *App {
 	return &App{
 		fyneApp:   app.New(),
 		version:   version,
+		verbose:   verbose,
 		storage:   stor,
 		credStore: credStore,
 		treeData: &TreeData{

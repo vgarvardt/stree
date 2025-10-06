@@ -128,7 +128,7 @@ func (a *App) connectToBookmark(bookmarkTitle string) {
 		AccessKey:    bookmark.AccessKeyID,
 		SecretKey:    secretKey,
 		SessionToken: bookmark.SessionToken,
-		Debug:        false,
+		Debug:        a.verbose,
 	}
 
 	s3Client, err := s3client.NewClient(context.Background(), s3Cfg, a.version)
@@ -163,7 +163,8 @@ func (a *App) connectToBookmark(bookmarkTitle string) {
 	slog.Info("Connected to bookmark",
 		slog.String("title", bookmark.Title),
 		slog.String("endpoint", bookmark.Endpoint),
-		slog.Int64("session-id", sessionID))
+		slog.Int64("session-id", sessionID),
+	)
 
 	// Update selection
 	a.bookmarkSelect.SetSelected(bookmark.Title)

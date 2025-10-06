@@ -20,7 +20,7 @@ var (
 )
 
 func main() {
-	var verboseLogs bool
+	var verbose bool
 	var storageDSN string
 	var storagePurge bool
 
@@ -30,7 +30,7 @@ func main() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			logger := logging.BuildLogger(verboseLogs)
+			logger := logging.BuildLogger(verbose)
 			slog.SetDefault(logger)
 
 			storageConfig := storage.Config{
@@ -58,17 +58,18 @@ func main() {
 				slog.String("version", version),
 				slog.String("built", built),
 				slog.String("storage-dsn", storageDSN),
-				slog.Bool("storage-purge", storagePurge))
+				slog.Bool("storage-purge", storagePurge),
+			)
 
 			// Launch the GUI application
-			app := gui.NewApp(stor, credStore, version)
+			app := gui.NewApp(stor, credStore, verbose, version)
 
 			return app.Run(ctx)
 		},
 	}
 
 	pf := rootCmd.PersistentFlags()
-	pf.BoolVarP(&verboseLogs, "verbose", "v", false, "verbose logging")
+	pf.BoolVarP(&verbose, "verbose", "v", false, "verbose logging")
 	pf.StringVar(&storageDSN, "storage-dsn", "./storage.db", "SQLite database file path (use ':memory:' for in-memory database)")
 	pf.BoolVar(&storagePurge, "storage-purge", false, "remove storage file before initialization (start from scratch)")
 
