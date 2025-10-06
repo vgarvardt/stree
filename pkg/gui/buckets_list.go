@@ -194,7 +194,7 @@ func (a *App) loadBuckets() {
 		a.statusBar.SetText("Loading buckets...")
 	}, true)
 
-	buckets, err := a.s3Client.ListBuckets(a.ctx)
+	buckets, err := a.s3Client.ListBuckets(a.ctx, nil)
 	if err != nil {
 		slog.Error("Failed to load buckets", slogx.Error(err))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
@@ -311,4 +311,3 @@ func (a *App) loadBucketMetadata(bucketName string) {
 
 	slog.Info("Loaded bucket metadata", slog.String("bucket", bucketName))
 }
-

@@ -2,14 +2,17 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/aws/smithy-go/ptr"
 	"github.com/cappuccinotm/slogx"
 
 	"github.com/vgarvardt/stree/pkg/models"
@@ -103,18 +106,25 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 		return nil
 	}
 
-	// Test connection button
-	testButton := widget.NewButtonWithIcon("Test Connection", theme.SearchIcon(), func() {
+	// Test connection button - declare first so it can reference itself
+	var testButton *widget.Button
+	testButton = widget.NewButtonWithIcon("Test Connection", theme.SearchIcon(), func() {
 		if err := validateFields(); err != nil {
 			statusLabel.SetText("❌ " + err.Error())
 			statusLabel.Refresh()
 			return
 		}
 
+		// Disable button during test
+		testButton.Disable()
 		statusLabel.SetText("⏳ Testing connection...")
 		statusLabel.Refresh()
 
 		go func() {
+			// Create a context with 30-second timeout
+			testCtx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+			defer cancel()
+
 			cfg := s3client.Config{
 				Endpoint:     endpointEntry.Text,
 				Region:       regionEntry.Text,
@@ -124,26 +134,31 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 				Debug:        false,
 			}
 
-			client, err := s3client.NewClient(context.Background(), cfg, a.version)
+			client, err := s3client.NewClient(testCtx, cfg, a.version)
 			if err != nil {
 				a.fyneApp.Driver().DoFromGoroutine(func() {
 					statusLabel.SetText("❌ Failed to create client: " + err.Error())
 					statusLabel.Refresh()
+					testButton.Enable()
 				}, false)
 				return
 			}
 
-			// Test with ListBuckets
-			ctx := context.Background()
-			_, err = client.ListBuckets(ctx)
+			// Test with ListBuckets using the timeout context
+			_, err = client.ListBuckets(testCtx, ptr.Int32(1))
 
 			a.fyneApp.Driver().DoFromGoroutine(func() {
 				if err != nil {
-					statusLabel.SetText("❌ Connection failed: " + err.Error())
+					if errors.Is(testCtx.Err(), context.DeadlineExceeded) {
+						statusLabel.SetText("❌ Connection test timed out (30s)")
+					} else {
+						statusLabel.SetText("❌ Connection failed: " + err.Error())
+					}
 				} else {
 					statusLabel.SetText("✅ Connection successful!")
 				}
 				statusLabel.Refresh()
+				testButton.Enable()
 			}, false)
 		}()
 	})

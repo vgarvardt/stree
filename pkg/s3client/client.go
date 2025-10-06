@@ -174,8 +174,8 @@ func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*mod
 }
 
 // ListBuckets returns all S3 buckets
-func (c *Client) ListBuckets(ctx context.Context) ([]models.Bucket, error) {
-	output, err := c.s3Client.ListBuckets(ctx, &s3.ListBucketsInput{})
+func (c *Client) ListBuckets(ctx context.Context, limit *int32) ([]models.Bucket, error) {
+	output, err := c.s3Client.ListBuckets(ctx, &s3.ListBucketsInput{MaxBuckets: limit})
 	if err != nil {
 		return nil, err
 	}
