@@ -120,8 +120,8 @@ func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, verbose b
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
 
-	a.window = a.fyneApp.NewWindow("S3 Tree Browser")
-	a.window.Resize(fyne.NewSize(800, 600))
+	a.window = a.fyneApp.NewWindow("STree Browser")
+	a.window.Resize(fyne.NewSize(1000, 700))
 
 	// Initialize bookmark selector
 	bookmarkSelector := a.initBookmarkSelector()
@@ -173,13 +173,7 @@ func (a *App) Run(ctx context.Context) error {
 	leftToolbar := container.NewHBox(bookmarkSelector, refreshButton, sortOptions)
 
 	// Right side: search
-	toolbar := container.NewBorder(
-		nil,
-		nil,
-		leftToolbar,
-		searchEntry,
-		nil,
-	)
+	toolbar := container.NewAdaptiveGrid(2, leftToolbar, searchEntry)
 
 	// Create status bar
 	a.statusBar = widget.NewLabel("Not connected. Select a bookmark to connect.")
