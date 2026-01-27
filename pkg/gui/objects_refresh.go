@@ -145,6 +145,7 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 	metadata.ObjectsRefreshedAt = &now
 	metadata.ObjectsCount = aggregates.latestVersionCount
 	metadata.ObjectsSize = aggregates.latestVersionSize
+	metadata.DeleteMarkersCount = aggregates.deleteMarkerCount
 
 	// Find the bucket to get its creation date
 	var bucket models.Bucket

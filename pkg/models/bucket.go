@@ -22,6 +22,7 @@ type BucketMetadata struct {
 	ObjectsRefreshedAt *time.Time `json:"objects_refreshed_at,omitempty"`
 	ObjectsCount       int64      `json:"objects_count"`
 	ObjectsSize        int64      `json:"objects_size"`
+	DeleteMarkersCount int64      `json:"delete_markers_count"`
 }
 
 // BucketDetails represents bucket information stored in the database

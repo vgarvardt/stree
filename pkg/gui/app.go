@@ -419,7 +419,12 @@ func (a *App) createTree() *widget.Tree {
 					if metadata.ObjectsRefreshedAt != nil {
 						refreshedAt = metadata.ObjectsRefreshedAt.Format(time.RFC3339)
 					}
-					label.SetText(fmt.Sprintf("Objects: %s / %s @ %s", humanize.Comma(metadata.ObjectsCount), humanize.Bytes(uint64(metadata.ObjectsSize)), refreshedAt))
+					label.SetText(fmt.Sprintf("Objects: %s / %s (dm %s) @ %s",
+						humanize.Comma(metadata.ObjectsCount),
+						humanize.Bytes(uint64(metadata.ObjectsSize)),
+						humanize.Comma(metadata.DeleteMarkersCount),
+						refreshedAt,
+					))
 					icon.SetResource(theme.StorageIcon())
 					// Set right-click handler for objects metadata
 					tappable.onSecondaryTap = func(position fyne.Position) {
