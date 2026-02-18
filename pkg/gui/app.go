@@ -88,7 +88,9 @@ type App struct {
 
 	// Track the objects list window to ensure modality
 	objectsWindow fyne.Window
-	mainContent   fyne.CanvasObject
+	// Track the MPU list window to ensure modality
+	mpuWindow   fyne.Window
+	mainContent fyne.CanvasObject
 }
 
 // TreeData holds the hierarchical data for the tree widget
@@ -232,6 +234,7 @@ func (a *App) createTree() *widget.Tree {
 					uidPrefixMeta + bucketName + ":lock",
 					uidPrefixMeta + bucketName + ":retention",
 					uidPrefixMeta + bucketName + ":objects",
+					uidPrefixMeta + bucketName + ":mpus",
 				}
 				_ = metadata // Avoid unused variable
 				return items
@@ -434,6 +437,26 @@ func (a *App) createTree() *widget.Tree {
 					tappable.onDoubleTap = func() {
 						go a.showObjectsList(bucketName)
 					}
+				case "mpus":
+					refreshedAt := "???"
+					if metadata.MPUsRefreshedAt != nil {
+						refreshedAt = metadata.MPUsRefreshedAt.Format(time.RFC3339)
+					}
+					label.SetText(fmt.Sprintf("MPUs: %s / %s parts / %s @ %s",
+						humanize.Comma(metadata.MPUsCount),
+						humanize.Comma(metadata.MPUsTotalParts),
+						humanize.Bytes(uint64(metadata.MPUsTotalSize)),
+						refreshedAt,
+					))
+					icon.SetResource(theme.UploadIcon())
+					// Set right-click handler for MPUs metadata
+					tappable.onSecondaryTap = func(position fyne.Position) {
+						a.showMPUsContextMenu(bucketName, metadata, position)
+					}
+					// Set double-click handler to open MPU list
+					tappable.onDoubleTap = func() {
+						go a.showMPUList(bucketName)
+					}
 				default:
 					label.SetText("Unknown field")
 					icon.SetResource(theme.QuestionIcon())
@@ -466,6 +489,16 @@ func (a *App) closeObjectsWindow() {
 		a.fyneApp.Driver().DoFromGoroutine(func() {
 			a.objectsWindow.Close()
 			a.objectsWindow = nil
+		}, true)
+	}
+}
+
+// closeMPUWindow closes the MPU list window if it's open
+func (a *App) closeMPUWindow() {
+	if a.mpuWindow != nil {
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.mpuWindow.Close()
+			a.mpuWindow = nil
 		}, true)
 	}
 }

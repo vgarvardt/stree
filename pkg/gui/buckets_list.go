@@ -61,6 +61,9 @@ func (a *App) refreshBuckets() {
 	// Close objects window if it's open to prevent conflicts
 	a.closeObjectsWindow()
 
+	// Close MPU window if it's open to prevent conflicts
+	a.closeMPUWindow()
+
 	// Close all open branches to reset the tree state
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.CloseAllBranches()
@@ -158,6 +161,69 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 		fyne.NewMenuItemSeparator(),
 		copyObjectsAsIsItem,
 		copyObjectsFormattedItem,
+		copySizeAsIsItem,
+		copySizeFormattedItem,
+		fyne.NewMenuItemSeparator(),
+		refreshItem,
+	)
+	popUpMenu := widget.NewPopUpMenu(menu, a.window.Canvas())
+	popUpMenu.ShowAtPosition(position)
+}
+
+// showMPUsContextMenu displays a context menu for the MPUs metadata
+func (a *App) showMPUsContextMenu(bucketName string, metadata *models.BucketMetadata, position fyne.Position) {
+	// Create list item to open the MPU list window
+	listItem := fyne.NewMenuItem("List", func() {
+		a.showMPUList(bucketName)
+	})
+	listItem.Icon = theme.ListIcon()
+
+	// Create menu items for copying MPU count
+	copyMPUsAsIsItem := fyne.NewMenuItem("Copy MPUs count as is", func() {
+		mpusCount := fmt.Sprintf("%d", metadata.MPUsCount)
+		a.window.Clipboard().SetContent(mpusCount)
+		slog.Info("Copied MPUs count to clipboard", slog.String("bucket", bucketName), slog.Int64("count", metadata.MPUsCount))
+		a.statusBar.SetText(fmt.Sprintf("Copied MPUs count: %s", mpusCount))
+	})
+	copyMPUsAsIsItem.Icon = theme.ContentCopyIcon()
+
+	copyMPUsFormattedItem := fyne.NewMenuItem("Copy MPUs count formatted", func() {
+		mpusCount := humanize.Comma(metadata.MPUsCount)
+		a.window.Clipboard().SetContent(mpusCount)
+		slog.Info("Copied formatted MPUs count to clipboard", slog.String("bucket", bucketName), slog.Int64("count", metadata.MPUsCount))
+		a.statusBar.SetText(fmt.Sprintf("Copied MPUs count: %s", mpusCount))
+	})
+	copyMPUsFormattedItem.Icon = theme.ContentCopyIcon()
+
+	// Create menu items for copying total size
+	copySizeAsIsItem := fyne.NewMenuItem("Copy total size as is", func() {
+		size := fmt.Sprintf("%d", metadata.MPUsTotalSize)
+		a.window.Clipboard().SetContent(size)
+		slog.Info("Copied MPUs size to clipboard", slog.String("bucket", bucketName), slog.Int64("size", metadata.MPUsTotalSize))
+		a.statusBar.SetText(fmt.Sprintf("Copied MPUs size: %s bytes", size))
+	})
+	copySizeAsIsItem.Icon = theme.ContentCopyIcon()
+
+	copySizeFormattedItem := fyne.NewMenuItem("Copy total size formatted", func() {
+		size := humanize.Bytes(uint64(metadata.MPUsTotalSize))
+		a.window.Clipboard().SetContent(size)
+		slog.Info("Copied formatted MPUs size to clipboard", slog.String("bucket", bucketName), slog.Int64("size", metadata.MPUsTotalSize))
+		a.statusBar.SetText(fmt.Sprintf("Copied MPUs size: %s", size))
+	})
+	copySizeFormattedItem.Icon = theme.ContentCopyIcon()
+
+	// Create refresh item
+	refreshItem := fyne.NewMenuItem("Refresh", func() {
+		go a.refreshMPUsMetadata(bucketName)
+	})
+	refreshItem.Icon = theme.ViewRefreshIcon()
+
+	// Create and show the popup menu with separator
+	menu := fyne.NewMenu("",
+		listItem,
+		fyne.NewMenuItemSeparator(),
+		copyMPUsAsIsItem,
+		copyMPUsFormattedItem,
 		copySizeAsIsItem,
 		copySizeFormattedItem,
 		fyne.NewMenuItemSeparator(),

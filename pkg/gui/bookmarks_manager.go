@@ -195,6 +195,9 @@ func (a *App) disconnect() {
 	// Close objects window if open
 	a.closeObjectsWindow()
 
+	// Close MPU window if open
+	a.closeMPUWindow()
+
 	// Refresh tree
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.tree.Refresh()

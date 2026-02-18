@@ -262,3 +262,97 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 
 	return versions, nextPagination, nil
 }
+
+// ListMultipartUploads lists all uncompleted multipart uploads in a bucket with pagination support
+// If pagination is nil, starts from the beginning. Returns uploads and pagination state.
+func (c *Client) ListMultipartUploads(ctx context.Context, bucketName string, pagination *models.Pagination) ([]models.MultipartUpload, *models.Pagination, error) {
+	var keyMarker *string
+	var uploadIDMarker *string
+
+	// Use pagination state if provided
+	if pagination != nil && pagination.IsTruncated {
+		if pagination.NextKeyMarker != "" {
+			keyMarker = aws.String(pagination.NextKeyMarker)
+		}
+		if pagination.NextUploadIDMarker != "" {
+			uploadIDMarker = aws.String(pagination.NextUploadIDMarker)
+		}
+	}
+
+	input := &s3.ListMultipartUploadsInput{
+		Bucket:         aws.String(bucketName),
+		KeyMarker:      keyMarker,
+		UploadIdMarker: uploadIDMarker,
+		MaxUploads:     aws.Int32(1000),
+	}
+
+	output, err := c.s3Client.ListMultipartUploads(ctx, input)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to list multipart uploads: %w", err)
+	}
+
+	uploads := make([]models.MultipartUpload, 0, len(output.Uploads))
+	for _, u := range output.Uploads {
+		upload := models.MultipartUpload{
+			Key:          aws.ToString(u.Key),
+			UploadID:     aws.ToString(u.UploadId),
+			StorageClass: string(u.StorageClass),
+			Initiated:    aws.ToTime(u.Initiated),
+		}
+		if u.Initiator != nil {
+			upload.Initiator = aws.ToString(u.Initiator.DisplayName)
+		}
+		if u.Owner != nil {
+			upload.Owner = aws.ToString(u.Owner.DisplayName)
+		}
+		uploads = append(uploads, upload)
+	}
+
+	// Build pagination response
+	nextPagination := &models.Pagination{
+		IsTruncated:        aws.ToBool(output.IsTruncated),
+		NextKeyMarker:      aws.ToString(output.NextKeyMarker),
+		NextUploadIDMarker: aws.ToString(output.NextUploadIdMarker),
+	}
+
+	return uploads, nextPagination, nil
+}
+
+// ListParts lists all parts for a specific multipart upload
+func (c *Client) ListParts(ctx context.Context, bucketName, key, uploadID string) ([]models.MultipartUploadPart, error) {
+	var parts []models.MultipartUploadPart
+	var partNumberMarker *string
+
+	for {
+		input := &s3.ListPartsInput{
+			Bucket:           aws.String(bucketName),
+			Key:              aws.String(key),
+			UploadId:         aws.String(uploadID),
+			PartNumberMarker: partNumberMarker,
+			MaxParts:         aws.Int32(1000),
+		}
+
+		output, err := c.s3Client.ListParts(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list parts for upload %s: %w", uploadID, err)
+		}
+
+		for _, p := range output.Parts {
+			part := models.MultipartUploadPart{
+				UploadID:     uploadID,
+				PartNumber:   aws.ToInt32(p.PartNumber),
+				Size:         aws.ToInt64(p.Size),
+				ETag:         aws.ToString(p.ETag),
+				LastModified: aws.ToTime(p.LastModified),
+			}
+			parts = append(parts, part)
+		}
+
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+		partNumberMarker = output.NextPartNumberMarker
+	}
+
+	return parts, nil
+}

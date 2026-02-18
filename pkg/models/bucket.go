@@ -23,6 +23,12 @@ type BucketMetadata struct {
 	ObjectsCount       int64      `json:"objects_count"`
 	ObjectsSize        int64      `json:"objects_size"`
 	DeleteMarkersCount int64      `json:"delete_markers_count"`
+
+	// Multipart uploads stats
+	MPUsRefreshedAt *time.Time `json:"mpus_refreshed_at,omitempty"`
+	MPUsCount       int64      `json:"mpus_count"`
+	MPUsTotalParts  int64      `json:"mpus_total_parts"`
+	MPUsTotalSize   int64      `json:"mpus_total_size"`
 }
 
 // BucketDetails represents bucket information stored in the database
@@ -52,5 +58,5 @@ func (bd BucketDetails) ToMetadata() *BucketMetadata {
 
 // HasMetadata checks if the bucket details contain metadata (not just basic info)
 func (bd BucketDetails) HasMetadata() bool {
-	return bd.VersioningStatus != "" || bd.ObjectLockEnabled || bd.RetentionEnabled || bd.ObjectsRefreshedAt != nil
+	return bd.VersioningStatus != "" || bd.ObjectLockEnabled || bd.RetentionEnabled || bd.ObjectsRefreshedAt != nil || bd.MPUsRefreshedAt != nil
 }
