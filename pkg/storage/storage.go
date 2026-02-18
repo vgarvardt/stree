@@ -9,15 +9,14 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/sqlite"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "modernc.org/sqlite" // CGO-free SQLite driver
 
 	"github.com/vgarvardt/stree/pkg/models"
+	"github.com/vgarvardt/stree/pkg/storage/migrations"
 )
-
-// schemaVersion represents the current database schema version.
-// Increment this constant when making backward-incompatible changes to the schema.
-// When the version doesn't match, the database will be recreated from scratch.
-const schemaVersion = 3
 
 // Config holds configuration for storage initialization
 type Config struct {
@@ -60,9 +59,11 @@ type Object struct {
 
 // New creates a new Storage instance with the provided configuration
 func New(ctx context.Context, config Config) (*Storage, error) {
-	// Purge database file if needed (version mismatch or explicit purge request)
-	if err := purgeIfNeeded(ctx, config); err != nil {
-		return nil, fmt.Errorf("failed to purge database: %w", err)
+	// Purge database file if explicitly requested
+	if config.Purge && config.DSN != ":memory:" {
+		if err := os.Remove(config.DSN); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to remove storage file: %w", err)
+		}
 	}
 
 	db, err := sql.Open("sqlite", config.DSN)
@@ -84,150 +85,41 @@ func New(ctx context.Context, config Config) (*Storage, error) {
 
 	storage := &Storage{db: db}
 
-	// Initialize schema
-	if err := storage.initSchema(ctx); err != nil {
+	// Run migrations
+	if err := storage.runMigrations(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
-	}
-
-	// Set the schema version
-	if err := storage.setSchemaVersion(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to set schema version: %w", err)
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
 	return storage, nil
 }
 
-// purgeIfNeeded checks if the database file needs to be purged and removes it if necessary
-// Returns nil if no purge is needed or if purge was successful
-func purgeIfNeeded(ctx context.Context, config Config) error {
-	// In-memory databases cannot be purged, skip all checks
-	if config.DSN == ":memory:" {
-		return nil
+// runMigrations applies all pending database migrations
+func (s *Storage) runMigrations() error {
+	// Create migration source from embedded files
+	source, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("failed to create migration source: %w", err)
 	}
 
-	// Check if we need to purge the database file
-	shouldPurge := config.Purge
-
-	// If not explicitly purging, check if database version mismatches
-	if !shouldPurge {
-		mismatch, err := isDBVersionMismatch(ctx, config.DSN)
-		if err != nil {
-			return fmt.Errorf("failed to check database version: %w", err)
-		}
-		shouldPurge = mismatch
+	// Create database driver for sqlite
+	driver, err := sqlite.WithInstance(s.db, &sqlite.Config{})
+	if err != nil {
+		return fmt.Errorf("failed to create migration driver: %w", err)
 	}
 
-	// Purge the database file if needed
-	if shouldPurge {
-		if err := os.Remove(config.DSN); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove storage file: %w", err)
-		}
+	// Create migrate instance
+	m, err := migrate.NewWithInstance("iofs", source, "sqlite", driver)
+	if err != nil {
+		return fmt.Errorf("failed to create migrate instance: %w", err)
+	}
+
+	// Run migrations
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
 	return nil
-}
-
-// isDBVersionMismatch checks if the database file exists and has a mismatched version
-// Returns true if the database should be purged and recreated
-func isDBVersionMismatch(ctx context.Context, dsn string) (bool, error) {
-	// Check if file exists
-	if _, err := os.Stat(dsn); os.IsNotExist(err) {
-		// File doesn't exist, no mismatch (will be created fresh)
-		return false, nil
-	}
-
-	// Open database temporarily to check version
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return false, fmt.Errorf("failed to open database for version check: %w", err)
-	}
-	defer db.Close()
-
-	// Try to read the version
-	var version int
-	err = db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version)
-	if err != nil {
-		// If we can't read the version, assume it's corrupted or incompatible
-		return true, nil
-	}
-
-	// Return true if version doesn't match (needs purge)
-	return version != schemaVersion, nil
-}
-
-// setSchemaVersion sets the current schema version in the database
-func (s *Storage) setSchemaVersion(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion))
-	if err != nil {
-		return fmt.Errorf("failed to set schema version: %w", err)
-	}
-	return nil
-}
-
-// initSchema creates the database tables
-func (s *Storage) initSchema(ctx context.Context) error {
-	schema := `
-CREATE TABLE IF NOT EXISTS sessions (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	config_str TEXT NOT NULL UNIQUE,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_config_str ON sessions(config_str);
-
-CREATE TABLE IF NOT EXISTS buckets (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	session_id INTEGER NOT NULL,
-	name TEXT NOT NULL,
-	creation_date DATETIME NOT NULL, -- Bucket creation date from S3
-	details TEXT NOT NULL, -- JSON field
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-	UNIQUE(session_id, name)
-);
-
-CREATE INDEX IF NOT EXISTS idx_buckets_session_id ON buckets(session_id);
-CREATE INDEX IF NOT EXISTS idx_buckets_name ON buckets(name);
-CREATE INDEX IF NOT EXISTS idx_buckets_creation_date ON buckets(creation_date);
-
-CREATE TABLE IF NOT EXISTS objects (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	bucket_id INTEGER NOT NULL,
-	properties TEXT NOT NULL, -- JSON field
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY (bucket_id) REFERENCES buckets(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_objects_bucket_id ON objects(bucket_id);
-
--- JSON field indexes for efficient filtering and ordering
-CREATE INDEX IF NOT EXISTS idx_objects_size ON objects(json_extract(properties, '$.size'));
-CREATE INDEX IF NOT EXISTS idx_objects_last_modified ON objects(json_extract(properties, '$.last_modified'));
-CREATE INDEX IF NOT EXISTS idx_objects_is_delete_marker ON objects(json_extract(properties, '$.is_delete_marker'));
-
-CREATE TABLE IF NOT EXISTS bookmarks (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	title TEXT NOT NULL,
-	endpoint TEXT NOT NULL,
-	region TEXT NOT NULL,
-	access_key_id TEXT NOT NULL,
-	session_token TEXT,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	last_used_at DATETIME
-);
-
-CREATE INDEX IF NOT EXISTS idx_bookmarks_title ON bookmarks(title);
-CREATE INDEX IF NOT EXISTS idx_bookmarks_last_used ON bookmarks(last_used_at);
-`
-
-	_, err := s.db.ExecContext(ctx, schema)
-	return err
 }
 
 // Close closes the database connection

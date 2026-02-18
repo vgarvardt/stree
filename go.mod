@@ -12,6 +12,7 @@ require (
 	github.com/cappuccinotm/slogx v1.5.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/goccy/go-json v0.10.5
+	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/zalando/go-keyring v0.2.6
@@ -37,7 +38,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.14 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.6 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/fredbi/uri v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fyne-io/gl-js v0.2.0 // indirect
@@ -60,7 +61,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rymdport/portal v0.4.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
@@ -69,9 +70,9 @@ require (
 	github.com/yuin/goldmark v1.7.8 // indirect
 	golang.org/x/exp v0.0.0-20260212183809-81e46e3db34a // indirect
 	golang.org/x/image v0.31.0 // indirect
-	golang.org/x/net v0.44.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.68.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
