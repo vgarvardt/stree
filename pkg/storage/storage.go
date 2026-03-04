@@ -31,10 +31,11 @@ type Storage struct {
 
 // Session represents an S3 connection session
 type Session struct {
-	ID        int64
-	ConfigStr string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                 int64
+	ConfigStr          string
+	BucketsRefreshedAt *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Bucket represents a cached S3 bucket
@@ -180,9 +181,9 @@ func (s *Storage) UpsertSession(ctx context.Context, configStr string) (int64, e
 func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, error) {
 	var session Session
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, config_str, created_at, updated_at FROM sessions WHERE config_str = ?`,
+		`SELECT id, config_str, buckets_refreshed_at, created_at, updated_at FROM sessions WHERE config_str = ?`,
 		configStr,
-	).Scan(&session.ID, &session.ConfigStr, &session.CreatedAt, &session.UpdatedAt)
+	).Scan(&session.ID, &session.ConfigStr, &session.BucketsRefreshedAt, &session.CreatedAt, &session.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -192,6 +193,36 @@ func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, e
 	}
 
 	return &session, nil
+}
+
+// GetSessionByID retrieves a session by its ID
+func (s *Storage) GetSessionByID(ctx context.Context, sessionID int64) (*Session, error) {
+	var session Session
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, config_str, buckets_refreshed_at, created_at, updated_at FROM sessions WHERE id = ?`,
+		sessionID,
+	).Scan(&session.ID, &session.ConfigStr, &session.BucketsRefreshedAt, &session.CreatedAt, &session.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("failed to get session by ID: %w", err)
+	}
+
+	return &session, nil
+}
+
+// UpdateSessionBucketsRefreshedAt updates the buckets_refreshed_at timestamp for a session
+func (s *Storage) UpdateSessionBucketsRefreshedAt(ctx context.Context, sessionID int64, refreshedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET buckets_refreshed_at = ?, updated_at = ? WHERE id = ?`,
+		refreshedAt, time.Now(), sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update session buckets_refreshed_at: %w", err)
+	}
+	return nil
 }
 
 // UpsertBucket creates or updates a bucket with its encryption configuration

@@ -13,6 +13,7 @@ import (
 	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
+	"github.com/vgarvardt/stree/pkg/storage"
 )
 
 // bucketsLoadProgress represents the current progress of the buckets loading operation
@@ -84,6 +85,70 @@ func (a *App) refreshSingleBucket(bucketName string) {
 func (a *App) loadBuckets() {
 	startedAt := time.Now()
 
+	// Check if the session already has a cached buckets list
+	session, err := a.storage.GetSessionByID(a.ctx, a.sessionID)
+	if err != nil {
+		slog.Warn("Failed to get session", slogx.Error(err))
+	}
+
+	if session != nil && session.BucketsRefreshedAt != nil {
+		// Buckets were previously loaded - use cached data from DB
+		slog.Info("Loading buckets from DB cache", slog.Time("refreshed-at", *session.BucketsRefreshedAt))
+		a.loadBucketsFromCache(session)
+		return
+	}
+
+	// No cached data - fetch from S3
+	a.loadBucketsFromS3(startedAt)
+}
+
+// loadBucketsFromCache loads buckets from the database cache
+func (a *App) loadBucketsFromCache(session *storage.Session) {
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.statusBar.SetText("Loading buckets from cache...")
+	}, true)
+
+	storedBuckets, err := a.storage.GetBucketsBySession(a.ctx, a.sessionID)
+	if err != nil {
+		slog.Error("Failed to load buckets from cache", slogx.Error(err))
+		a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error loading from cache: %v", err))
+		}, true)
+		return
+	}
+
+	// Convert stored buckets to model buckets
+	buckets := make([]models.Bucket, 0, len(storedBuckets))
+	for _, sb := range storedBuckets {
+		bucket := models.Bucket{
+			Name:         sb.Name,
+			CreationDate: sb.CreationDate,
+			Encryption:   sb.Encryption,
+		}
+		buckets = append(buckets, bucket)
+	}
+
+	a.treeData.buckets = buckets
+
+	// Sort buckets according to current sort mode
+	a.sortBuckets()
+
+	refreshedAt := session.BucketsRefreshedAt.Format(time.RFC3339)
+	statusMsg := fmt.Sprintf("Loaded %d bucket(s) from cache (last refreshed: %s)", len(buckets), refreshedAt)
+
+	slog.Info("Loaded buckets from DB cache",
+		slog.Int("count", len(buckets)),
+		slog.String("refreshed-at", refreshedAt),
+	)
+
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.tree.Refresh()
+		a.statusBar.SetText(statusMsg)
+	}, false)
+}
+
+// loadBucketsFromS3 fetches buckets from S3 and stores them
+func (a *App) loadBucketsFromS3(startedAt time.Time) {
 	slog.Info("Loading S3 buckets")
 	a.fyneApp.Driver().DoFromGoroutine(func() {
 		a.statusBar.SetText("Loading buckets...")
@@ -175,6 +240,14 @@ func (a *App) performBucketsStore(ctx context.Context, startedAt time.Time, prog
 
 	elapsed := time.Since(startedAt)
 	slog.Info("Loaded buckets", slog.Int("count", len(buckets)), slog.Duration("elapsed", elapsed))
+
+	// Update session's buckets_refreshed_at timestamp
+	refreshedAt := time.Now()
+	if err := a.storage.UpdateSessionBucketsRefreshedAt(ctx, a.sessionID, refreshedAt); err != nil {
+		slog.Warn("Failed to update session buckets_refreshed_at", slogx.Error(err))
+	} else {
+		slog.Info("Updated session buckets_refreshed_at", slog.Time("refreshed-at", refreshedAt))
+	}
 
 	doneChan <- bucketsLoadResult{
 		success: true,
