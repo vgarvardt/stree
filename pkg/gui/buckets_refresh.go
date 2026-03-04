@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
@@ -337,4 +338,39 @@ func (a *App) loadBucketMetadata(bucketName string) {
 	}, false)
 
 	slog.Info("Loaded bucket metadata", slog.String("bucket", bucketName))
+}
+
+// showEncryptionDetails opens a window displaying the bucket encryption configuration as formatted JSON
+func (a *App) showEncryptionDetails(bucketName string) {
+	// Find the bucket to get its encryption config
+	var encryption *models.BucketEncryption
+	for _, b := range a.treeData.buckets {
+		if b.Name == bucketName {
+			encryption = b.Encryption
+			break
+		}
+	}
+
+	if encryption == nil {
+		return
+	}
+
+	// Marshal to formatted JSON
+	formatted, err := json.MarshalIndent(encryption, "", "  ")
+	if err != nil {
+		slog.Error("Failed to format encryption config", slogx.Error(err), slog.String("bucket", bucketName))
+		return
+	}
+
+	a.fyneApp.Driver().DoFromGoroutine(func() {
+		w := a.fyneApp.NewWindow(fmt.Sprintf("Encryption: %s", bucketName))
+		w.Resize(fyne.NewSize(600, 400))
+
+		text := widget.NewLabel(string(formatted))
+		text.Wrapping = fyne.TextWrapBreak
+		text.TextStyle = fyne.TextStyle{Monospace: true}
+
+		w.SetContent(container.NewScroll(text))
+		w.Show()
+	}, false)
 }

@@ -18,15 +18,6 @@ import (
 	"github.com/vgarvardt/stree/pkg/storage"
 )
 
-// TODO: These will be configurable later
-var (
-	s3Endpoint     = "http://localhost:9000"
-	s3AccessKeyID  = "YOUR_ACCESS_KEY_ID"
-	s3SecretKey    = "YOUR_SECRET_ACCESS_KEY"
-	s3SessionToken = ""
-	s3Region       = "eu-west-1"
-)
-
 const (
 	uidPrefixBucket = "bucket:"
 	uidPrefixMeta   = "meta:"
@@ -233,9 +224,21 @@ func (a *App) createTree() *widget.Tree {
 					uidPrefixMeta + bucketName + ":versioning",
 					uidPrefixMeta + bucketName + ":lock",
 					uidPrefixMeta + bucketName + ":retention",
-					uidPrefixMeta + bucketName + ":objects",
-					uidPrefixMeta + bucketName + ":mpus",
 				}
+
+				// Add encryption item if bucket has encryption configured
+				for _, b := range a.treeData.buckets {
+					if b.Name == bucketName && b.Encryption != nil {
+						items = append(items, uidPrefixMeta+bucketName+":encryption")
+						break
+					}
+				}
+
+				items = append(items,
+					uidPrefixMeta+bucketName+":objects",
+					uidPrefixMeta+bucketName+":mpus",
+				)
+
 				_ = metadata // Avoid unused variable
 				return items
 			}
@@ -298,16 +301,20 @@ func (a *App) createTree() *widget.Tree {
 				label := c.Objects[1].(*widget.Label)
 
 				bucketName := uid[len(uidPrefixBucket):]
+				var hasEncryption bool
 				for _, bucket := range a.treeData.buckets {
 					if bucket.Name == bucketName {
 						label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
+						hasEncryption = bucket.Encryption != nil
 					}
 				}
 
-				// Update folder icon based on branch open/closed state
+				// Update folder icon based on branch open/closed state and encryption
 				bucketUID := uidPrefixBucket + bucketName
 				if a.tree.IsBranchOpen(bucketUID) {
 					icon.SetResource(theme.FolderOpenIcon())
+				} else if hasEncryption {
+					icon.SetResource(theme.FolderNewIcon())
 				} else {
 					icon.SetResource(theme.FolderIcon())
 				}
@@ -417,6 +424,13 @@ func (a *App) createTree() *widget.Tree {
 						icon.SetResource(theme.ContentRemoveIcon())
 					}
 					tappable.onSecondaryTap = nil
+				case "encryption":
+					label.SetText("Encryption: Enabled")
+					icon.SetResource(theme.FolderNewIcon())
+					tappable.onSecondaryTap = nil
+					tappable.onDoubleTap = func() {
+						a.showEncryptionDetails(bucketName)
+					}
 				case "objects":
 					refreshedAt := "???"
 					if metadata.ObjectsRefreshedAt != nil {
