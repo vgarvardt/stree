@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
+	"github.com/dustin/go-humanize"
 	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
@@ -300,7 +301,7 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 
 			if latestProgress.totalCount > 0 {
 				progressBar.SetValue(float64(latestProgress.currentIdx) / float64(latestProgress.totalCount))
-				progressLabel.SetText(fmt.Sprintf("%d / %d buckets", latestProgress.currentIdx, latestProgress.totalCount))
+				progressLabel.SetText(fmt.Sprintf("%s / %s", humanize.Comma(int64(latestProgress.currentIdx)), humanize.Comma(int64(latestProgress.totalCount))))
 			}
 
 			dialog.Refresh()
