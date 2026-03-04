@@ -173,6 +173,20 @@ func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*mod
 	return metadata, nil
 }
 
+// GetBucketEncryption retrieves bucket encryption configuration.
+// Returns nil if the bucket has no encryption configuration.
+func (c *Client) GetBucketEncryption(ctx context.Context, bucketName string) (*models.BucketEncryption, error) {
+	output, err := c.s3Client.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		slog.Debug("Failed to get bucket encryption", slog.String("bucket", bucketName), slogx.Error(err))
+		return nil, nil
+	}
+
+	return output.ServerSideEncryptionConfiguration, nil
+}
+
 // ListBuckets returns all S3 buckets
 func (c *Client) ListBuckets(ctx context.Context, limit *int32) ([]models.Bucket, error) {
 	output, err := c.s3Client.ListBuckets(ctx, &s3.ListBucketsInput{MaxBuckets: limit})

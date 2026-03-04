@@ -42,8 +42,9 @@ type Bucket struct {
 	ID           int64
 	SessionID    int64
 	Name         string
-	CreationDate time.Time       // Bucket creation date from S3
-	Details      json.RawMessage // JSON field for bucket metadata
+	CreationDate time.Time                // Bucket creation date from S3
+	Details      json.RawMessage          // JSON field for bucket metadata
+	Encryption   *models.BucketEncryption // Bucket encryption configuration (nullable)
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -193,19 +194,27 @@ func (s *Storage) GetSession(ctx context.Context, configStr string) (*Session, e
 	return &session, nil
 }
 
-// UpsertBucket creates or updates a bucket
-func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate time.Time, details models.BucketDetails) error {
+// UpsertBucket creates or updates a bucket with its encryption configuration
+func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string, creationDate time.Time, details models.BucketDetails, encryption *models.BucketEncryption) error {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return fmt.Errorf("failed to marshal bucket details: %w", err)
+	}
+
+	var encryptionJSON []byte
+	if encryption != nil {
+		encryptionJSON, err = json.Marshal(encryption)
+		if err != nil {
+			return fmt.Errorf("failed to marshal bucket encryption: %w", err)
+		}
 	}
 
 	now := time.Now()
 
 	// Try to update existing bucket
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE buckets SET details = ?, updated_at = ?, creation_date = ? WHERE session_id = ? AND name = ?`,
-		detailsJSON, now, creationDate, sessionID, name,
+		`UPDATE buckets SET details = ?, encryption = ?, updated_at = ?, creation_date = ? WHERE session_id = ? AND name = ?`,
+		detailsJSON, encryptionJSON, now, creationDate, sessionID, name,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update bucket: %w", err)
@@ -222,8 +231,8 @@ func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string
 
 	// Insert new bucket
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO buckets (session_id, name, creation_date, details, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		sessionID, name, creationDate, detailsJSON, now, now,
+		`INSERT INTO buckets (session_id, name, creation_date, details, encryption, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, name, creationDate, detailsJSON, encryptionJSON, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert bucket: %w", err)
@@ -235,7 +244,7 @@ func (s *Storage) UpsertBucket(ctx context.Context, sessionID int64, name string
 // GetBucketsBySession retrieves all buckets for a session
 func (s *Storage) GetBucketsBySession(ctx context.Context, sessionID int64) ([]Bucket, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, name, creation_date, details, created_at, updated_at FROM buckets WHERE session_id = ? ORDER BY name`,
+		`SELECT id, session_id, name, creation_date, details, encryption, created_at, updated_at FROM buckets WHERE session_id = ? ORDER BY name`,
 		sessionID,
 	)
 	if err != nil {
@@ -246,8 +255,15 @@ func (s *Storage) GetBucketsBySession(ctx context.Context, sessionID int64) ([]B
 	var buckets []Bucket
 	for rows.Next() {
 		var bucket Bucket
-		if err := rows.Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.CreationDate, &bucket.Details, &bucket.CreatedAt, &bucket.UpdatedAt); err != nil {
+		var encryption []byte
+		if err := rows.Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.CreationDate, &bucket.Details, &encryption, &bucket.CreatedAt, &bucket.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan bucket: %w", err)
+		}
+		if encryption != nil {
+			bucket.Encryption = new(models.BucketEncryption)
+			if err := json.Unmarshal(encryption, bucket.Encryption); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal bucket encryption: %w", err)
+			}
 		}
 		buckets = append(buckets, bucket)
 	}
@@ -262,15 +278,22 @@ func (s *Storage) GetBucketsBySession(ctx context.Context, sessionID int64) ([]B
 // GetBucket retrieves a specific bucket
 func (s *Storage) GetBucket(ctx context.Context, sessionID int64, name string) (*Bucket, error) {
 	var bucket Bucket
+	var encryption []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, session_id, name, creation_date, details, created_at, updated_at FROM buckets WHERE session_id = ? AND name = ?`,
+		`SELECT id, session_id, name, creation_date, details, encryption, created_at, updated_at FROM buckets WHERE session_id = ? AND name = ?`,
 		sessionID, name,
-	).Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.CreationDate, &bucket.Details, &bucket.CreatedAt, &bucket.UpdatedAt)
+	).Scan(&bucket.ID, &bucket.SessionID, &bucket.Name, &bucket.CreationDate, &bucket.Details, &encryption, &bucket.CreatedAt, &bucket.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get bucket: %w", err)
+	}
+	if encryption != nil {
+		bucket.Encryption = new(models.BucketEncryption)
+		if err := json.Unmarshal(encryption, bucket.Encryption); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal bucket encryption: %w", err)
+		}
 	}
 
 	return &bucket, nil

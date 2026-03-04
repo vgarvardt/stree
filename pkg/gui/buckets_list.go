@@ -274,9 +274,16 @@ func (a *App) loadBuckets() {
 	// Sort buckets according to current sort mode
 	a.sortBuckets()
 
-	slog.Info("Storing buckets to the storage", slog.Int("count", len(buckets)))
+	slog.Info("Reading encryption information and storing buckets to the storage", slog.Int("count", len(buckets)))
 	// Store all buckets to storage, preserving existing metadata
-	for _, bucket := range buckets {
+	for i, bucket := range buckets {
+		// Fetch encryption configuration from S3
+		encryptionCfg, err := a.s3Client.GetBucketEncryption(a.ctx, bucket.Name)
+		if err != nil {
+			slog.Error("Failed to get bucket encryption", slogx.Error(err), slog.String("bucket", bucket.Name))
+		}
+		buckets[i].Encryption = encryptionCfg
+
 		// Try to load existing bucket details from storage to preserve metadata
 		var details models.BucketDetails
 		storedBucket, err := a.storage.GetBucket(a.ctx, a.sessionID, bucket.Name)
@@ -284,18 +291,17 @@ func (a *App) loadBuckets() {
 			// Bucket exists in storage - deserialize and preserve existing metadata
 			if err := json.Unmarshal(storedBucket.Details, &details); err == nil {
 				// Update the basic bucket info but keep the metadata
-				details.Name = bucket.Name
-				details.CreationDate = bucket.CreationDate
+				details.Bucket = buckets[i]
 			} else {
 				// Failed to unmarshal, create new details
-				details = models.NewBucketDetails(bucket, nil)
+				details = models.NewBucketDetails(buckets[i], nil)
 			}
 		} else {
 			// Bucket doesn't exist in storage yet, create new details
-			details = models.NewBucketDetails(bucket, nil)
+			details = models.NewBucketDetails(buckets[i], nil)
 		}
 
-		if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucket.Name, bucket.CreationDate, details); err != nil {
+		if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucket.Name, bucket.CreationDate, details, encryptionCfg); err != nil {
 			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", bucket.Name))
 		}
 	}
@@ -366,7 +372,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 
 	// Store the metadata in storage using BucketDetails
 	details := models.NewBucketDetails(bucket, metadata)
-	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucket.CreationDate, details); err != nil {
+	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
 		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
 	}
 

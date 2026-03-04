@@ -55,7 +55,7 @@ func TestStorage(t *testing.T) {
 			ObjectLockEnabled: false,
 		},
 	}
-	err = store.UpsertBucket(ctx, sessionID, "test-bucket", creationDate, bucketDetails)
+	err = store.UpsertBucket(ctx, sessionID, "test-bucket", creationDate, bucketDetails, nil)
 	require.NoError(t, err, "Failed to upsert bucket")
 
 	// Test bucket retrieval

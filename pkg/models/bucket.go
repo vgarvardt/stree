@@ -1,11 +1,19 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+)
+
+// BucketEncryption is an alias for the S3 server-side encryption configuration
+type BucketEncryption = s3Types.ServerSideEncryptionConfiguration
 
 // Bucket represents an S3 bucket
 type Bucket struct {
-	Name         string    `json:"name"`
-	CreationDate time.Time `json:"creation_date"`
+	Name         string            `json:"name"`
+	CreationDate time.Time         `json:"creation_date"`
+	Encryption   *BucketEncryption `json:"encryption,omitempty"`
 }
 
 // BucketMetadata represents S3 bucket metadata and configuration

@@ -274,7 +274,7 @@ func (v *objectsListView) loadObjects() {
 		// Store the bucket with metadata if available
 		metadata := v.app.treeData.bucketMetadata[v.bucketName]
 		details := models.NewBucketDetails(*foundBucket, metadata)
-		if err := v.app.storage.UpsertBucket(v.app.ctx, v.app.sessionID, foundBucket.Name, foundBucket.CreationDate, details); err != nil {
+		if err := v.app.storage.UpsertBucket(v.app.ctx, v.app.sessionID, foundBucket.Name, foundBucket.CreationDate, details, foundBucket.Encryption); err != nil {
 			slog.Error("Failed to store bucket", slogx.Error(err), slog.String("bucket", v.bucketName))
 			v.app.fyneApp.Driver().DoFromGoroutine(func() {
 				v.statusBar.SetText(fmt.Sprintf("Error storing bucket: %v", err))

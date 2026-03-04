@@ -158,7 +158,7 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 
 	// Store the updated metadata in storage
 	details := models.NewBucketDetails(bucket, metadata)
-	if err := a.storage.UpsertBucket(ctx, a.sessionID, bucketName, bucket.CreationDate, details); err != nil {
+	if err := a.storage.UpsertBucket(ctx, a.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
 		slog.Error("Failed to update bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
 		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to update metadata: %w", err)}
 		return
