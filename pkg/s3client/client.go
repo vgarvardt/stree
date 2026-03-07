@@ -2,6 +2,7 @@ package s3client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	awsCredentials "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
 	"github.com/cappuccinotm/slogx"
 
@@ -180,8 +182,16 @@ func (c *Client) GetBucketEncryption(ctx context.Context, bucketName string) (*m
 		Bucket: aws.String(bucketName),
 	})
 	if err != nil {
-		slog.Debug("Failed to get bucket encryption", slog.String("bucket", bucketName), slogx.Error(err))
-		return nil, nil
+		apiErr, ok := errors.AsType[smithy.APIError](err)
+		if !ok {
+			slog.Error("Could not get bucket encryption info", slog.String("bucket", bucketName), slogx.Error(err))
+		}
+
+		if apiErr.ErrorCode() == "ServerSideEncryptionConfigurationNotFoundError" {
+			return nil, nil
+		}
+
+		return nil, err
 	}
 
 	return output.ServerSideEncryptionConfiguration, nil
