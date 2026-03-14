@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -59,6 +60,26 @@ type Object struct {
 	UpdatedAt  time.Time
 }
 
+// buildDSN constructs a SQLite DSN with per-connection PRAGMAs.
+// The modernc driver applies _pragma parameters on every new connection,
+// ensuring all connections in the pool are consistently configured.
+func buildDSN(dsn string) string {
+	pragmas := url.Values{
+		"_pragma": {
+			"busy_timeout(5000)",       // 5s timeout for locked database
+			"synchronous(normal)",      // safe with WAL, much faster writes
+			"cache_size(-64000)",       // 64MB cache (default is ~2MB)
+			"mmap_size(268435456)",     // 256MB memory-mapped I/O
+			"foreign_keys(on)",         // required for CASCADE deletes
+		},
+	}
+
+	if dsn == ":memory:" {
+		return "file::memory:?" + pragmas.Encode()
+	}
+	return "file:" + dsn + "?" + pragmas.Encode()
+}
+
 // New creates a new Storage instance with the provided configuration
 func New(ctx context.Context, config Config) (*Storage, error) {
 	// Purge database file if explicitly requested
@@ -68,15 +89,23 @@ func New(ctx context.Context, config Config) (*Storage, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", config.DSN)
+	dsn := buildDSN(config.DSN)
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Enable foreign key constraints (required for CASCADE deletes)
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+	// Configure connection pool for SQLite with WAL mode:
+	// multiple readers can run concurrently, but only one writer at a time.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(0)
+
+	// journal_mode is database-wide (not per-connection), so set it once after opening.
+	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+		return nil, fmt.Errorf("failed to enable WAL journal mode: %w", err)
 	}
 
 	// Test connection
