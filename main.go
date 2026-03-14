@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/cappuccinotm/slogx"
 	"github.com/spf13/cobra"
@@ -72,7 +73,7 @@ func main() {
 
 	pf := rootCmd.PersistentFlags()
 	pf.BoolVarP(&verbose, "verbose", "v", false, "verbose logging")
-	pf.StringVar(&storageDSN, "storage-dsn", "./storage.db", "SQLite database file path (use ':memory:' for in-memory database)")
+	pf.StringVar(&storageDSN, "storage-dsn", defaultStorageDSN(), "SQLite database file path (use ':memory:' for in-memory database)")
 	pf.BoolVar(&storagePurge, "storage-purge", false, "remove storage file before initialization (start from scratch)")
 
 	ctx := context.Background()
@@ -80,4 +81,21 @@ func main() {
 		slog.Error("command execution failed", slogx.Error(err))
 		os.Exit(1)
 	}
+}
+
+// defaultStorageDSN returns the default storage path.
+// Uses ~/Library/Application Support/com.github.vgarvardt.stree/ on macOS
+// so the app works correctly when launched from a .app bundle (where cwd is /).
+func defaultStorageDSN() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "./storage.db"
+	}
+
+	dir := filepath.Join(configDir, "com.github.vgarvardt.stree")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "./storage.db"
+	}
+
+	return filepath.Join(dir, "storage.db")
 }
