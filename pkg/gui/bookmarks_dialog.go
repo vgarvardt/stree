@@ -12,11 +12,9 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"github.com/aws/smithy-go/ptr"
 	"github.com/cappuccinotm/slogx"
 
 	"github.com/vgarvardt/stree/pkg/models"
-	"github.com/vgarvardt/stree/pkg/s3client"
 )
 
 // showBookmarkDialog displays a dialog for creating or editing a bookmark
@@ -60,13 +58,11 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 		sessionTokenEntry.SetText(existingBookmark.SessionToken)
 
 		// Load secret key from credential store
-		if a.credStore != nil {
-			secretKey, err := a.credStore.GetSecretKey(a.ctx, existingBookmark.ID)
-			if err != nil {
-				slog.Warn("Failed to load secret key from credential store", slogx.Error(err))
-			} else {
-				secretKeyEntry.SetText(secretKey)
-			}
+		secretKey, err := a.svc.GetSecretKey(a.svc.OpCtx(), existingBookmark.ID)
+		if err != nil {
+			slog.Warn("Failed to load secret key from credential store", slogx.Error(err))
+		} else {
+			secretKeyEntry.SetText(secretKey)
 		}
 	}
 
@@ -122,32 +118,18 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 
 		go func() {
 			// Create a context with 30-second timeout
-			testCtx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+			testCtx, cancel := context.WithTimeout(a.svc.OpCtx(), 30*time.Second)
 			defer cancel()
 
-			cfg := s3client.Config{
-				Endpoint:     endpointEntry.Text,
-				Region:       regionEntry.Text,
-				AccessKey:    accessKeyEntry.Text,
-				SecretKey:    secretKeyEntry.Text,
-				SessionToken: sessionTokenEntry.Text,
-				Debug:        a.verbose,
-			}
+			err := a.svc.TestConnection(testCtx,
+				endpointEntry.Text,
+				regionEntry.Text,
+				accessKeyEntry.Text,
+				secretKeyEntry.Text,
+				sessionTokenEntry.Text,
+			)
 
-			client, err := s3client.NewClient(testCtx, cfg, a.version)
-			if err != nil {
-				a.fyneApp.Driver().DoFromGoroutine(func() {
-					statusLabel.SetText("❌ Failed to create client: " + err.Error())
-					statusLabel.Refresh()
-					testButton.Enable()
-				}, false)
-				return
-			}
-
-			// Test with ListBuckets using the timeout context
-			_, err = client.ListBuckets(testCtx, ptr.Int32(1))
-
-			a.fyneApp.Driver().DoFromGoroutine(func() {
+			a.doUIAsync(func() {
 				if err != nil {
 					if errors.Is(testCtx.Err(), context.DeadlineExceeded) {
 						statusLabel.SetText("❌ Connection test timed out (30s)")
@@ -159,7 +141,7 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 				}
 				statusLabel.Refresh()
 				testButton.Enable()
-			}, false)
+			})
 		}()
 	})
 
@@ -187,21 +169,10 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 			bookmark.ID = existingBookmark.ID
 		}
 
-		// Save bookmark to database
-		if err := a.storage.UpsertBookmark(a.ctx, bookmark); err != nil {
-			dialog.ShowError(fmt.Errorf("failed to save bookmark: %w", err), dialogWindow)
+		if err := a.svc.SaveBookmark(a.svc.OpCtx(), bookmark, secretKeyEntry.Text); err != nil {
+			dialog.ShowError(err, dialogWindow)
 			return
 		}
-
-		// Save secret key to credential store
-		if a.credStore != nil {
-			if err := a.credStore.StoreSecretKey(a.ctx, bookmark.ID, secretKeyEntry.Text); err != nil {
-				dialog.ShowError(fmt.Errorf("failed to save secret key: %w", err), dialogWindow)
-				return
-			}
-		}
-
-		slog.Info("Bookmark saved", slog.Int64("id", bookmark.ID), slog.String("title", bookmark.Title))
 
 		// Refresh bookmarks list
 		a.refreshBookmarksList()
@@ -242,17 +213,10 @@ func (a *App) showDeleteBookmarkConfirm(bookmark *models.Bookmark, parentWindow 
 				return
 			}
 
-			// Delete from database
-			if err := a.storage.DeleteBookmark(a.ctx, bookmark.ID); err != nil {
-				dialog.ShowError(fmt.Errorf("failed to delete bookmark: %w", err), parentWindow)
+			wasActive, err := a.svc.DeleteBookmark(a.svc.OpCtx(), bookmark.ID)
+			if err != nil {
+				dialog.ShowError(err, parentWindow)
 				return
-			}
-
-			// Delete from credential store
-			if a.credStore != nil {
-				if err := a.credStore.DeleteSecretKey(a.ctx, bookmark.ID); err != nil {
-					slog.Warn("Failed to delete secret key from credential store", slogx.Error(err))
-				}
 			}
 
 			slog.Info("Bookmark deleted", slog.Int64("id", bookmark.ID), slog.String("title", bookmark.Title))
@@ -261,7 +225,7 @@ func (a *App) showDeleteBookmarkConfirm(bookmark *models.Bookmark, parentWindow 
 			a.refreshBookmarksList()
 
 			// If this was the active bookmark, disconnect
-			if a.activeBookmark != nil && a.activeBookmark.ID == bookmark.ID {
+			if wasActive {
 				a.disconnect()
 			}
 		},

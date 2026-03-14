@@ -11,10 +11,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
 	"github.com/dustin/go-humanize"
-	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
-	"github.com/vgarvardt/stree/pkg/storage"
+	"github.com/vgarvardt/stree/pkg/service"
 )
 
 const objectsListLimit = 1000
@@ -22,7 +21,7 @@ const objectsListLimit = 1000
 // showObjectsList opens a modal window displaying objects in the bucket
 func (a *App) showObjectsList(bucketName string) {
 	// Create and show the window on the Fyne UI thread
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUIAsync(func() {
 		// If an objects window is already open, close it first
 		if a.objectsWindow != nil {
 			a.objectsWindow.Close()
@@ -55,7 +54,7 @@ func (a *App) showObjectsList(bucketName string) {
 
 		// Load objects asynchronously after the window is shown
 		go objectsView.loadObjects()
-	}, false)
+	})
 }
 
 // objectsListView manages the objects list UI state
@@ -63,7 +62,6 @@ type objectsListView struct {
 	app        *App
 	window     fyne.Window
 	bucketName string
-	bucketID   int64
 
 	// UI components
 	table         *widget.Table
@@ -229,150 +227,93 @@ func (v *objectsListView) createTable() *widget.Table {
 	return table
 }
 
-// loadObjects loads objects from storage or S3
+// getSortMode returns the service sort mode from the UI dropdown selection
+func (v *objectsListView) getSortMode() service.ObjectSort {
+	switch v.sortSelect.Selected {
+	case "Size ↓":
+		return service.ObjectSortSizeDesc
+	case "Size ↑":
+		return service.ObjectSortSizeAsc
+	case "Date ↓":
+		return service.ObjectSortDateDesc
+	case "Date ↑":
+		return service.ObjectSortDateAsc
+	default:
+		return service.ObjectSortDateDesc
+	}
+}
+
+// getFilter returns the service filter from the UI dropdown selection
+func (v *objectsListView) getFilter() service.ObjectFilter {
+	switch v.filterSelect.Selected {
+	case "Files only":
+		return service.ObjectFilterFilesOnly
+	case "Delete markers only":
+		return service.ObjectFilterDeleteMarkersOnly
+	default:
+		return service.ObjectFilterAll
+	}
+}
+
+// loadObjects loads objects from storage via the service
 func (v *objectsListView) loadObjects() {
 	slog.Info("Loading objects list", slog.String("bucket", v.bucketName))
 
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+	v.app.doUI(func() {
 		v.statusBar.SetText("Loading objects...")
 		v.refreshButton.Disable()
-	}, true)
+	})
 
-	// Get bucket ID - first try from storage
-	bucket, err := v.app.storage.GetBucket(v.app.opCtx, v.app.sessionID, v.bucketName)
-	if err != nil {
-		slog.Error("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
-			v.statusBar.SetText(fmt.Sprintf("Error: %v", err))
-			v.refreshButton.Enable()
-		}, true)
-		return
-	}
-
-	// If bucket not found in storage, try to find it in the app's in-memory data and store it
-	if bucket == nil {
-		slog.Warn("Bucket not found in storage, attempting to store it", slog.String("bucket", v.bucketName))
-
-		// Find bucket in app's in-memory data
-		foundBucket := v.app.treeData.bucketIndex[v.bucketName]
-
-		if foundBucket == nil {
-			slog.Error("Bucket not found in app data", slog.String("bucket", v.bucketName))
-			v.app.fyneApp.Driver().DoFromGoroutine(func() {
-				v.statusBar.SetText("Bucket not found")
-				v.refreshButton.Enable()
-			}, true)
-			return
-		}
-
-		// Store the bucket with metadata if available
+	// Ensure bucket exists in storage (handles the case where bucket was loaded but not yet stored)
+	if foundBucket := v.app.treeData.bucketIndex[v.bucketName]; foundBucket != nil {
 		metadata := v.app.treeData.bucketMetadata[v.bucketName]
-		details := models.NewBucketDetails(*foundBucket, metadata)
-		if err := v.app.storage.UpsertBucket(v.app.opCtx, v.app.sessionID, foundBucket.Name, foundBucket.CreationDate, details, foundBucket.Encryption); err != nil {
-			slog.Error("Failed to store bucket", slogx.Error(err), slog.String("bucket", v.bucketName))
-			v.app.fyneApp.Driver().DoFromGoroutine(func() {
-				v.statusBar.SetText(fmt.Sprintf("Error storing bucket: %v", err))
+		if err := v.app.svc.EnsureBucketInStorage(v.app.svc.OpCtx(), *foundBucket, metadata); err != nil {
+			slog.Error("Failed to ensure bucket in storage", slogx.Error(err), slog.String("bucket", v.bucketName))
+			v.app.doUI(func() {
+				v.statusBar.SetText(fmt.Sprintf("Error: %v", err))
 				v.refreshButton.Enable()
-			}, true)
-			return
-		}
-
-		// Now try to get it again
-		bucket, err = v.app.storage.GetBucket(v.app.opCtx, v.app.sessionID, v.bucketName)
-		if err != nil || bucket == nil {
-			slog.Error("Failed to get bucket after storing", slogx.Error(err), slog.String("bucket", v.bucketName))
-			v.app.fyneApp.Driver().DoFromGoroutine(func() {
-				v.statusBar.SetText("Error: Could not retrieve bucket")
-				v.refreshButton.Enable()
-			}, true)
+			})
 			return
 		}
 	}
 
-	v.bucketID = bucket.ID
-
-	// Build list options
-	opts := storage.ObjectListOptions{
-		Limit: objectsListLimit,
-	}
-
-	// Apply sorting
-	switch v.sortSelect.Selected {
-	case "Size ↓":
-		opts.OrderBy = storage.OrderBySize
-		opts.OrderDesc = true
-	case "Size ↑":
-		opts.OrderBy = storage.OrderBySize
-		opts.OrderDesc = false
-	case "Date ↓":
-		opts.OrderBy = storage.OrderByLastModified
-		opts.OrderDesc = true
-	case "Date ↑":
-		opts.OrderBy = storage.OrderByLastModified
-		opts.OrderDesc = false
-	}
-
-	// Apply filtering
-	switch v.filterSelect.Selected {
-	case "Files only":
-		deleteMarker := false
-		opts.FilterDeleteMarker = &deleteMarker
-	case "Delete markers only":
-		deleteMarker := true
-		opts.FilterDeleteMarker = &deleteMarker
-	}
-
-	// Load from storage only - never fetch from S3
-	storageObjects, err := v.app.storage.ListObjectsByBucket(v.app.opCtx, v.bucketID, opts)
+	objects, err := v.app.svc.ListObjects(v.app.svc.OpCtx(), v.bucketName, v.getSortMode(), v.getFilter(), objectsListLimit)
 	if err != nil {
-		slog.Error("Failed to list objects from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
+		slog.Error("Failed to list objects", slogx.Error(err), slog.String("bucket", v.bucketName))
+		v.app.doUI(func() {
 			v.statusBar.SetText(fmt.Sprintf("Error: %v", err))
 			v.refreshButton.Enable()
-		}, true)
+		})
 		return
 	}
 
-	// Check if we have objects in storage
-	if len(storageObjects) == 0 {
-		slog.Info("No objects found in storage", slog.String("bucket", v.bucketName))
+	if len(objects) == 0 {
 		v.objects = []models.ObjectVersion{}
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
+		v.app.doUIAsync(func() {
 			v.table.Refresh()
 			v.statusBar.SetText("No objects in cache. Use 'Refresh' on the Objects metadata in the tree to load objects.")
 			v.refreshButton.Enable()
-		}, false)
+		})
 		return
 	}
 
-	slog.Info("Loading objects from storage", slog.String("bucket", v.bucketName), slog.Int("count", len(storageObjects)))
+	v.objects = objects
 
-	// Deserialize objects
-	v.objects = make([]models.ObjectVersion, 0, len(storageObjects))
-	for _, obj := range storageObjects {
-		var version models.ObjectVersion
-		if err := json.Unmarshal(obj.Properties, &version); err != nil {
-			slog.Warn("Failed to unmarshal object version", slogx.Error(err))
-			continue
-		}
-		v.objects = append(v.objects, version)
-	}
-
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+	v.app.doUIAsync(func() {
 		v.table.Refresh()
 		v.statusBar.SetText(fmt.Sprintf("Loaded %d object(s) from cache", len(v.objects)))
 		v.refreshButton.Enable()
-	}, false)
+	})
 }
 
 // refreshObjects clears the current view and instructs user to refresh from the main tree
 func (v *objectsListView) refreshObjects() {
 	slog.Info("Refresh requested for objects list", slog.String("bucket", v.bucketName))
 
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+	v.app.doUI(func() {
 		v.statusBar.SetText("To refresh objects, use 'Refresh' on the Objects metadata in the main tree view.")
 		v.refreshButton.Enable()
-	}, true)
+	})
 }
 
 // initializeSelections sets the initial selections for dropdowns without triggering callbacks

@@ -3,8 +3,6 @@ package gui
 import (
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
@@ -12,45 +10,17 @@ import (
 	"github.com/dustin/go-humanize"
 
 	"github.com/vgarvardt/stree/pkg/models"
+	"github.com/vgarvardt/stree/pkg/service"
 )
 
 // getFilteredBuckets returns buckets filtered by the search query
 func (a *App) getFilteredBuckets() []models.Bucket {
-	if a.treeData.searchFilter == "" {
-		return a.treeData.buckets
-	}
-
-	filtered := make([]models.Bucket, 0)
-	for _, bucket := range a.treeData.buckets {
-		// Case-sensitive substring matching
-		if strings.Contains(bucket.Name, a.treeData.searchFilter) {
-			filtered = append(filtered, bucket)
-		}
-	}
-	return filtered
+	return service.FilterBuckets(a.treeData.buckets, a.treeData.searchFilter)
 }
 
 // sortBuckets sorts the buckets based on the current sort mode
 func (a *App) sortBuckets() {
-	switch a.treeData.sortMode {
-	case sortNameAsc:
-		sort.Slice(a.treeData.buckets, func(i, j int) bool {
-			return a.treeData.buckets[i].Name < a.treeData.buckets[j].Name
-		})
-	case sortNameDesc:
-		sort.Slice(a.treeData.buckets, func(i, j int) bool {
-			return a.treeData.buckets[i].Name > a.treeData.buckets[j].Name
-		})
-	case sortDateAsc:
-		sort.Slice(a.treeData.buckets, func(i, j int) bool {
-			return a.treeData.buckets[i].CreationDate.Before(a.treeData.buckets[j].CreationDate)
-		})
-	case sortDateDesc:
-		sort.Slice(a.treeData.buckets, func(i, j int) bool {
-			return a.treeData.buckets[i].CreationDate.After(a.treeData.buckets[j].CreationDate)
-		})
-	}
-
+	service.SortBuckets(a.treeData.buckets, a.treeData.sortMode)
 	// Rebuild the index since sorting shuffles the backing array
 	a.treeData.rebuildBucketIndex()
 }
@@ -61,9 +31,9 @@ func (a *App) showBucketContextMenu(bucketName string, position fyne.Position) {
 	copyNameItem := fyne.NewMenuItem("Copy name", func() {
 		a.window.Clipboard().SetContent(bucketName)
 		slog.Info("Copied bucket name to clipboard", slog.String("bucket", bucketName))
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.doUI(func() {
 			a.statusBar.SetText(fmt.Sprintf("Copied %q to clipboard", bucketName))
-		}, true)
+		})
 	})
 	copyNameItem.Icon = theme.ContentCopyIcon()
 

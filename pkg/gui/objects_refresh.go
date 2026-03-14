@@ -12,30 +12,8 @@ import (
 	"github.com/dustin/go-humanize"
 
 	"github.com/vgarvardt/stree/pkg/models"
+	"github.com/vgarvardt/stree/pkg/service"
 )
-
-// refreshProgress represents the current progress of the refresh operation
-type refreshProgress struct {
-	elapsed            time.Duration
-	fetchedCount       int
-	totalCount         int64
-	totalSize          int64
-	latestVersionCount int64
-	latestVersionSize  int64
-	deleteMarkerCount  int64
-	currentPhase       string
-}
-
-// refreshResult represents the final result of the refresh operation
-type refreshResult struct {
-	success            bool
-	cancelled          bool
-	err                error
-	totalCount         int64
-	latestVersionCount int64
-	latestVersionSize  int64
-	elapsed            time.Duration
-}
 
 // refreshObjectsMetadata refreshes object versions data for a bucket
 func (a *App) refreshObjectsMetadata(bucketName string) {
@@ -47,222 +25,62 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 	a.closeObjectsWindow()
 
 	// Create a cancellable context for this operation
-	ctx, cancel := context.WithCancel(a.opCtx)
-	// Don't use defer cancel() here - let the cancel button handle it
-	// The context will be cleaned up when the function returns
+	ctx, cancel := context.WithCancel(a.svc.OpCtx())
 
 	// Create progress tracking channels
-	progressChan := make(chan refreshProgress, 1)
-	doneChan := make(chan refreshResult, 1)
+	progressChan := make(chan service.ObjectsProgress, 1)
+	doneChan := make(chan objectsRefreshResult, 1)
 
-	// Start the refresh operation in a goroutine
-	go a.performObjectsRefresh(ctx, bucketName, startedAt, progressChan, doneChan)
-
-	// Show progress modal on UI thread
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.showRefreshProgressModal(bucketName, cancel, progressChan, doneChan)
-	}, false)
-}
-
-// performObjectsRefresh performs the actual refresh operation with cancellation support
-func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, startedAt time.Time, progressChan chan<- refreshProgress, doneChan chan<- refreshResult) {
-	// Get the bucket from storage to get its ID
-	storedBucket, err := a.storage.GetBucket(ctx, a.sessionID, bucketName)
-	if err != nil {
-		slog.Error("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
-		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to get bucket from storage: %w", err)}
-		return
-	}
-
-	if storedBucket == nil {
-		slog.Error("Bucket not found in storage", slog.String("bucket", bucketName))
-		doneChan <- refreshResult{success: false, err: fmt.Errorf("bucket not found in storage")}
-		return
-	}
-
-	// Send initial progress
-	progressChan <- refreshProgress{
-		elapsed:      time.Since(startedAt),
-		currentPhase: "Deleting existing objects...",
-	}
-
-	// Delete all existing objects for this bucket
-	if err := a.storage.DeleteObjectsByBucket(ctx, storedBucket.ID); err != nil {
-		slog.Error("Failed to delete existing objects", slogx.Error(err), slog.String("bucket", bucketName))
-		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to delete existing objects: %w", err)}
-		return
-	}
-
-	slog.Info("Deleted existing objects from storage", slog.String("bucket", bucketName))
-
-	// Check for cancellation
-	if ctx.Err() != nil {
-		doneChan <- refreshResult{success: false, cancelled: true}
-		return
-	}
-
-	progressChan <- refreshProgress{
-		elapsed:      time.Since(startedAt),
-		currentPhase: "Fetching and storing object versions from S3...",
-	}
-
-	// Fetch and process object versions in batches, calculating aggregates on the fly
-	aggregates, err := a.fetchAndStoreObjectVersions(ctx, bucketName, storedBucket.ID, startedAt, progressChan)
-	if err != nil {
-		if ctx.Err() != nil {
-			doneChan <- refreshResult{success: false, cancelled: true}
-			return
-		}
-		slog.Error("Failed to fetch and store object versions", slogx.Error(err), slog.String("bucket", bucketName))
-		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to fetch and store object versions: %w", err)}
-		return
-	}
-
-	slog.Info("Calculated aggregates",
-		slog.String("bucket", bucketName),
-		slog.Int64("total-count", aggregates.totalCount),
-		slog.String("total-count-fmt", humanize.Comma(aggregates.totalCount)),
-		slog.Int64("total-size", aggregates.totalSize),
-		slog.String("total-size-fmt", humanize.Bytes(uint64(aggregates.totalSize))),
-		slog.Int64("latest-version-count", aggregates.latestVersionCount),
-		slog.String("latest-version-count-fmt", humanize.Comma(aggregates.latestVersionCount)),
-		slog.Int64("latest-version-size", aggregates.latestVersionSize),
-		slog.String("latest-version-size-fmt", humanize.Bytes(uint64(aggregates.latestVersionSize))),
-		slog.Int64("delete-marker-count", aggregates.deleteMarkerCount),
-		slog.String("delete-marker-count-fmt", humanize.Comma(aggregates.deleteMarkerCount)),
-	)
-
-	// Update metadata in storage
-	metadata, exists := a.treeData.bucketMetadata[bucketName]
-	if !exists {
-		slog.Warn("Bucket metadata not found in tree data", slog.String("bucket", bucketName))
-		metadata = &models.BucketMetadata{}
-		a.treeData.bucketMetadata[bucketName] = metadata
-	}
-
-	// Update the metadata with new aggregates
-	now := time.Now()
-	metadata.ObjectsRefreshedAt = &now
-	metadata.ObjectsCount = aggregates.latestVersionCount
-	metadata.ObjectsSize = aggregates.latestVersionSize
-	metadata.DeleteMarkersCount = aggregates.deleteMarkerCount
-
-	// Find the bucket to get its creation date
+	// Get current metadata and bucket info for the service call
+	currentMetadata := a.treeData.bucketMetadata[bucketName]
 	var bucket models.Bucket
 	if b := a.treeData.bucketIndex[bucketName]; b != nil {
 		bucket = *b
 	}
 
-	// Store the updated metadata in storage
-	details := models.NewBucketDetails(bucket, metadata)
-	if err := a.storage.UpsertBucket(ctx, a.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
-		slog.Error("Failed to update bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
-		doneChan <- refreshResult{success: false, err: fmt.Errorf("failed to update metadata: %w", err)}
-		return
-	}
+	// Start the refresh operation in a goroutine
+	go func() {
+		result, err := a.svc.RefreshObjectsMetadata(ctx, bucketName, currentMetadata, bucket, func(p service.ObjectsProgress) {
+			progressChan <- p
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				doneChan <- objectsRefreshResult{cancelled: true}
+				return
+			}
+			doneChan <- objectsRefreshResult{err: err}
+			return
+		}
 
-	elapsed := time.Since(startedAt)
-	slog.Info("Updated bucket metadata", slog.String("bucket", bucketName), slog.Duration("elapsed", elapsed))
+		// Update tree data with new metadata
+		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
 
-	// Send success result
-	doneChan <- refreshResult{
-		success:            true,
-		totalCount:         aggregates.totalCount,
-		latestVersionCount: aggregates.latestVersionCount,
-		latestVersionSize:  aggregates.latestVersionSize,
-		elapsed:            elapsed,
-	}
+		doneChan <- objectsRefreshResult{
+			success:            true,
+			latestVersionCount: result.LatestVersionCount,
+			latestVersionSize:  result.LatestVersionSize,
+			elapsed:            time.Since(startedAt),
+		}
+	}()
+
+	// Show progress modal on UI thread
+	a.doUIAsync(func() {
+		a.showRefreshProgressModal(bucketName, cancel, progressChan, doneChan)
+	})
 }
 
-// objectAggregates holds aggregate statistics calculated during object version processing
-type objectAggregates struct {
-	totalCount         int64
-	totalSize          int64
+// objectsRefreshResult represents the final result of the refresh operation
+type objectsRefreshResult struct {
+	success            bool
+	cancelled          bool
+	err                error
 	latestVersionCount int64
 	latestVersionSize  int64
-	deleteMarkerCount  int64
-	fetchedCount       int
-}
-
-// fetchAndStoreObjectVersions fetches object versions from S3 and stores them in batches,
-// calculating aggregates on the fly without keeping all versions in memory
-func (a *App) fetchAndStoreObjectVersions(ctx context.Context, bucketName string, bucketID int64, startedAt time.Time, progressChan chan<- refreshProgress) (*objectAggregates, error) {
-	aggregates := &objectAggregates{}
-	lastProgressUpdate := time.Now()
-	var pagination *models.Pagination
-
-	for {
-		// Check for cancellation
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		// Fetch a batch of object versions from S3
-		versions, nextPagination, err := a.s3Client.ListObjectVersions(ctx, bucketName, pagination)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list object versions: %w", err)
-		}
-
-		// Process and calculate aggregates for this batch
-		for _, version := range versions {
-			aggregates.fetchedCount++
-			aggregates.totalCount++
-
-			if version.IsDeleteMarker {
-				aggregates.deleteMarkerCount++
-			} else {
-				aggregates.totalSize += version.Size
-
-				if version.IsLatest {
-					aggregates.latestVersionCount++
-					aggregates.latestVersionSize += version.Size
-				}
-			}
-		}
-
-		// Store this batch immediately to the database
-		if len(versions) > 0 {
-			if err := a.storage.BulkInsertObjectVersions(ctx, bucketID, versions); err != nil {
-				return nil, fmt.Errorf("failed to store object versions batch: %w", err)
-			}
-			slog.Debug("Stored batch of object versions",
-				slog.String("bucket", bucketName),
-				slog.Int("batch-size", len(versions)),
-				slog.Int("total-fetched", aggregates.fetchedCount))
-		}
-
-		// Send progress update every 1 second
-		if time.Since(lastProgressUpdate) >= time.Second {
-			progressChan <- refreshProgress{
-				elapsed:            time.Since(startedAt),
-				fetchedCount:       aggregates.fetchedCount,
-				totalCount:         aggregates.totalCount,
-				totalSize:          aggregates.totalSize,
-				latestVersionCount: aggregates.latestVersionCount,
-				latestVersionSize:  aggregates.latestVersionSize,
-				deleteMarkerCount:  aggregates.deleteMarkerCount,
-				currentPhase:       fmt.Sprintf("Fetching and storing object versions... (%d processed)", aggregates.fetchedCount),
-			}
-			lastProgressUpdate = time.Now()
-		}
-
-		// Check if there are more results
-		if !nextPagination.IsTruncated {
-			break
-		}
-
-		pagination = nextPagination
-	}
-
-	slog.Info("Completed fetching and storing object versions",
-		slog.String("bucket", bucketName),
-		slog.Int("total-count", aggregates.fetchedCount))
-
-	return aggregates, nil
+	elapsed            time.Duration
 }
 
 // showRefreshProgressModal displays a modal dialog with progress information
-func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelFunc, progressChan <-chan refreshProgress, doneChan <-chan refreshResult) {
+func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelFunc, progressChan <-chan service.ObjectsProgress, doneChan <-chan objectsRefreshResult) {
 	startTime := time.Now()
 
 	// Create progress labels
@@ -271,7 +89,7 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 	statsLabel := widget.NewLabel("")
 
 	// Track the latest progress state
-	var latestProgress refreshProgress
+	var latestProgress service.ObjectsProgress
 
 	// Create cancel button
 	var dialog *widget.PopUp
@@ -301,30 +119,30 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 
 	// Helper function to update the UI with current state
 	updateUI := func() {
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.doUIAsync(func() {
 			// Always update elapsed time with current time
 			elapsed := time.Since(startTime)
 			elapsedLabel.SetText(fmt.Sprintf("Elapsed: %s", elapsed.Round(time.Second)))
 
 			// Update phase if we have it
-			if latestProgress.currentPhase != "" {
-				phaseLabel.SetText(latestProgress.currentPhase)
+			if latestProgress.Phase != "" {
+				phaseLabel.SetText(latestProgress.Phase)
 			}
 
 			// Update stats if we have data
-			if latestProgress.fetchedCount > 0 {
+			if latestProgress.FetchedCount > 0 {
 				statsText := fmt.Sprintf("Fetched: %s versions\nLatest: %s objects (%s)\nDelete markers: %s",
-					humanize.Comma(int64(latestProgress.fetchedCount)),
-					humanize.Comma(latestProgress.latestVersionCount),
-					humanize.Bytes(uint64(latestProgress.latestVersionSize)),
-					humanize.Comma(latestProgress.deleteMarkerCount),
+					humanize.Comma(int64(latestProgress.FetchedCount)),
+					humanize.Comma(latestProgress.LatestVersionCount),
+					humanize.Bytes(uint64(latestProgress.LatestVersionSize)),
+					humanize.Comma(latestProgress.DeleteMarkerCount),
 				)
 				statsLabel.SetText(statsText)
 			} else {
 				statsLabel.SetText("")
 			}
 			dialog.Refresh()
-		}, false)
+		})
 	}
 
 	// Start goroutine to handle progress updates and ticker
@@ -345,7 +163,7 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 
 			case result := <-doneChan:
 				// Close dialog and update status
-				a.fyneApp.Driver().DoFromGoroutine(func() {
+				a.doUIAsync(func() {
 					dialog.Hide()
 
 					if result.cancelled {
@@ -367,7 +185,7 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 						a.statusBar.SetText(fmt.Sprintf("Error refreshing %s: %s", bucketName, errMsg))
 						slog.Error("Refresh operation failed", slog.String("bucket", bucketName), slogx.Error(result.err))
 					}
-				}, false)
+				})
 				return // This exits the goroutine, triggering defer ticker.Stop()
 			}
 		}

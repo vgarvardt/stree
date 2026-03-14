@@ -14,47 +14,13 @@ import (
 	"github.com/dustin/go-humanize"
 
 	"github.com/vgarvardt/stree/pkg/models"
-	"github.com/vgarvardt/stree/pkg/s3client"
-	"github.com/vgarvardt/stree/pkg/storage"
+	"github.com/vgarvardt/stree/pkg/service"
 )
 
 const (
 	uidPrefixBucket = "bucket:"
 	uidPrefixMeta   = "meta:"
 )
-
-// SortMode represents the bucket sorting mode
-type SortMode int
-
-const (
-	sortNameAsc SortMode = iota
-	sortNameDesc
-	sortDateAsc
-	sortDateDesc
-)
-
-const (
-	labelSortByNameAsc  = "Name ↓"
-	labelSortByNameDesc = "Name ↑"
-	labelSortByDateAsc  = "Date ↓"
-	labelSortByDateDesc = "Date ↑"
-)
-
-// String returns the display name for the sort mode
-func (s SortMode) String() string {
-	switch s {
-	case sortNameAsc:
-		return labelSortByNameAsc
-	case sortNameDesc:
-		return labelSortByNameDesc
-	case sortDateAsc:
-		return labelSortByDateAsc
-	case sortDateDesc:
-		return labelSortByDateDesc
-	default:
-		return labelSortByNameAsc
-	}
-}
 
 // App represents the GUI application
 type App struct {
@@ -63,20 +29,11 @@ type App struct {
 	tree      *widget.Tree
 	statusBar *widget.Label
 	treeData  *TreeData
+	version   string
 
-	ctx      context.Context
-	opCtx    context.Context    // cancellable context for current bookmark operations
-	opCancel context.CancelFunc // cancels opCtx on bookmark switch / disconnect
-	storage  *storage.Storage
-	version  string
-	verbose  bool
-
-	s3Client  *s3client.Client
-	sessionID int64
+	svc *service.Service
 
 	// Bookmark management
-	credStore      *storage.CredentialStore
-	activeBookmark *models.Bookmark
 	bookmarkSelect *widget.Select
 
 	// Track the objects list window to ensure modality
@@ -92,7 +49,7 @@ type TreeData struct {
 	bucketIndex    map[string]*models.Bucket         // O(1) lookup by name
 	bucketMetadata map[string]*models.BucketMetadata // bucketName -> metadata
 	searchFilter   string                            // search filter for bucket names
-	sortMode       SortMode                          // current sorting mode
+	sortMode       service.SortMode                  // current sorting mode
 }
 
 // setBuckets replaces the bucket list and rebuilds the name index.
@@ -111,36 +68,34 @@ func (td *TreeData) rebuildBucketIndex() {
 }
 
 // NewApp creates a new GUI application
-func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, verbose bool, version string) *App {
+func NewApp(svc *service.Service, version string) *App {
 	return &App{
-		fyneApp:   app.New(),
-		version:   version,
-		verbose:   verbose,
-		storage:   stor,
-		credStore: credStore,
+		fyneApp: app.New(),
+		version: version,
+		svc:     svc,
 		treeData: &TreeData{
 			buckets:        []models.Bucket{},
 			bucketIndex:    make(map[string]*models.Bucket),
 			bucketMetadata: make(map[string]*models.BucketMetadata),
 			searchFilter:   "",
-			sortMode:       sortNameAsc, // Default sorting
+			sortMode:       service.SortNameAsc,
 		},
 	}
 }
 
-// resetOperationContext cancels any in-flight operations for the current bookmark
-// and creates a fresh context for the new connection.
-func (a *App) resetOperationContext() {
-	if a.opCancel != nil {
-		a.opCancel()
-	}
-	a.opCtx, a.opCancel = context.WithCancel(a.ctx)
+// doUI runs a function on the Fyne UI thread (blocking until complete).
+func (a *App) doUI(fn func()) {
+	a.fyneApp.Driver().DoFromGoroutine(fn, true)
+}
+
+// doUIAsync runs a function on the Fyne UI thread (non-blocking).
+func (a *App) doUIAsync(fn func()) {
+	a.fyneApp.Driver().DoFromGoroutine(fn, false)
 }
 
 // Run starts the GUI application
 func (a *App) Run(ctx context.Context) error {
-	a.ctx = ctx
-	a.resetOperationContext()
+	a.svc.SetContext(ctx)
 
 	a.window = a.fyneApp.NewWindow("STree Browser")
 	a.window.Resize(fyne.NewSize(1000, 700))
@@ -153,7 +108,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	// Create top toolbar with bookmark selector on the left
 	refreshButton := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
-		if a.s3Client == nil {
+		if !a.svc.IsConnected() {
 			a.statusBar.SetText("Not connected. Select a bookmark to connect.")
 			return
 		}
@@ -162,20 +117,20 @@ func (a *App) Run(ctx context.Context) error {
 
 	// Create sort dropdown
 	sortOptions := widget.NewSelect(
-		[]string{sortNameAsc.String(), sortNameDesc.String(), sortDateAsc.String(), sortDateDesc.String()},
+		[]string{service.SortNameAsc.String(), service.SortNameDesc.String(), service.SortDateAsc.String(), service.SortDateDesc.String()},
 		func(selected string) {
-			var mode SortMode
+			var mode service.SortMode
 			switch selected {
-			case labelSortByNameAsc:
-				mode = sortNameAsc
-			case labelSortByNameDesc:
-				mode = sortNameDesc
-			case labelSortByDateAsc:
-				mode = sortDateAsc
-			case labelSortByDateDesc:
-				mode = sortDateDesc
+			case service.LabelSortByNameAsc:
+				mode = service.SortNameAsc
+			case service.LabelSortByNameDesc:
+				mode = service.SortNameDesc
+			case service.LabelSortByDateAsc:
+				mode = service.SortDateAsc
+			case service.LabelSortByDateDesc:
+				mode = service.SortDateDesc
 			default:
-				mode = sortNameAsc
+				mode = service.SortNameAsc
 			}
 			a.treeData.sortMode = mode
 			a.sortBuckets()
@@ -286,20 +241,15 @@ func (a *App) createTree() *widget.Tree {
 		// Create function
 		func(branch bool) fyne.CanvasObject {
 			if branch {
-				// For branches (buckets), create icon + label
-				// The icon will be updated to show open/closed folder state
 				icon := widget.NewIcon(theme.FolderIcon())
 				label := widget.NewLabel("Template")
 				box := container.NewHBox(icon, label)
-				// Wrap in TappableContainer to handle right-clicks
 				tappable := NewTappableContainer(box, nil)
 				return tappable
 			} else {
-				// For leaves (metadata items), create icon + label
 				icon := widget.NewIcon(theme.DocumentIcon())
 				label := widget.NewLabel("Template")
 				box := container.NewHBox(icon, label)
-				// Wrap in TappableContainer to handle right-clicks on metadata items
 				tappable := NewTappableContainer(box, nil)
 				return tappable
 			}
@@ -520,19 +470,19 @@ func (a *App) createTree() *widget.Tree {
 // closeObjectsWindow closes the objects list window if it's open
 func (a *App) closeObjectsWindow() {
 	if a.objectsWindow != nil {
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.doUIAsync(func() {
 			a.objectsWindow.Close()
 			a.objectsWindow = nil
-		}, true)
+		})
 	}
 }
 
 // closeMPUWindow closes the MPU list window if it's open
 func (a *App) closeMPUWindow() {
 	if a.mpuWindow != nil {
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.doUIAsync(func() {
 			a.mpuWindow.Close()
 			a.mpuWindow = nil
-		}, true)
+		})
 	}
 }

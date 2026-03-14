@@ -14,23 +14,8 @@ import (
 	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
-	"github.com/vgarvardt/stree/pkg/storage"
+	"github.com/vgarvardt/stree/pkg/service"
 )
-
-// bucketsLoadProgress represents the current progress of the buckets loading operation
-type bucketsLoadProgress struct {
-	elapsed    time.Duration
-	currentIdx int
-	totalCount int
-}
-
-// bucketsLoadResult represents the final result of the buckets loading operation
-type bucketsLoadResult struct {
-	success bool
-	err     error
-	count   int
-	elapsed time.Duration
-}
 
 // refreshBuckets clears cached data and reloads the buckets list
 func (a *App) refreshBuckets() {
@@ -43,20 +28,17 @@ func (a *App) refreshBuckets() {
 	a.closeMPUWindow()
 
 	// Close all open branches to reset the tree state
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUI(func() {
 		a.tree.CloseAllBranches()
-	}, true)
+	})
 
 	// Clear cached bucket metadata
 	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
 
-	// Invalidate storage cache by deleting the current session
-	newSessionID, err := a.storage.InvalidateSession(a.opCtx, a.sessionID)
-	if err != nil {
+	// Invalidate storage cache
+	if _, err := a.svc.InvalidateSession(a.svc.OpCtx()); err != nil {
 		slog.Warn("Failed to invalidate storage cache", slogx.Error(err))
 	}
-	a.sessionID = newSessionID
-	slog.Info("Invalidated storage session", slog.Int64("session-id", a.sessionID))
 
 	// Reload buckets
 	a.loadBuckets()
@@ -66,202 +48,109 @@ func (a *App) refreshBuckets() {
 func (a *App) refreshSingleBucket(bucketName string) {
 	slog.Info("Refreshing bucket", slog.String("bucket", bucketName))
 
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUI(func() {
 		a.statusBar.SetText(fmt.Sprintf("Refreshing %s...", bucketName))
-	}, true)
+	})
 
 	// Remove cached metadata
 	delete(a.treeData.bucketMetadata, bucketName)
 
-	// Delete bucket from storage to force refresh
-	if err := a.storage.DeleteBucket(a.opCtx, a.sessionID, bucketName); err != nil {
-		slog.Warn("Failed to delete bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
+	// Find the bucket
+	var bucket models.Bucket
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		bucket = *b
 	}
 
-	// Reload bucket metadata from S3
-	a.loadBucketMetadata(bucketName)
+	metadata, err := a.svc.RefreshSingleBucket(a.svc.OpCtx(), bucket)
+	if err != nil {
+		slog.Error("Failed to refresh bucket", slogx.Error(err), slog.String("bucket", bucketName))
+		a.doUI(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error refreshing %s: %v", bucketName, err))
+		})
+		return
+	}
+
+	a.treeData.bucketMetadata[bucketName] = metadata
+
+	a.doUIAsync(func() {
+		a.tree.Refresh()
+		a.statusBar.SetText(fmt.Sprintf("Refreshed metadata for %s", bucketName))
+	})
 }
 
 // loadBuckets loads the list of S3 buckets
 func (a *App) loadBuckets() {
-	startedAt := time.Now()
-
-	// Check if the session already has a cached buckets list
-	session, err := a.storage.GetSessionByID(a.opCtx, a.sessionID)
-	if err != nil {
-		slog.Warn("Failed to get session", slogx.Error(err))
-	}
-
-	if session != nil && session.BucketsRefreshedAt != nil {
-		// Buckets were previously loaded - use cached data from DB
-		slog.Info("Loading buckets from DB cache", slog.Time("refreshed-at", *session.BucketsRefreshedAt))
-		a.loadBucketsFromCache(session)
-		return
-	}
-
-	// No cached data - fetch from S3
-	a.loadBucketsFromS3(startedAt)
-}
-
-// loadBucketsFromCache loads buckets from the database cache
-func (a *App) loadBucketsFromCache(session *storage.Session) {
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.statusBar.SetText("Loading buckets from cache...")
-	}, true)
-
-	storedBuckets, err := a.storage.GetBucketsBySession(a.opCtx, a.sessionID)
-	if err != nil {
-		slog.Error("Failed to load buckets from cache", slogx.Error(err))
-		a.fyneApp.Driver().DoFromGoroutine(func() {
-			a.statusBar.SetText(fmt.Sprintf("Error loading from cache: %v", err))
-		}, true)
-		return
-	}
-
-	// Convert stored buckets to model buckets
-	buckets := make([]models.Bucket, 0, len(storedBuckets))
-	for _, sb := range storedBuckets {
-		bucket := models.Bucket{
-			Name:         sb.Name,
-			CreationDate: sb.CreationDate,
-			Encryption:   sb.Encryption,
-		}
-		buckets = append(buckets, bucket)
-	}
-
-	a.treeData.setBuckets(buckets)
-
-	// Sort buckets according to current sort mode
-	a.sortBuckets()
-
-	refreshedAt := session.BucketsRefreshedAt.Format(time.RFC3339)
-	statusMsg := fmt.Sprintf("Loaded %d bucket(s) from cache (last refreshed: %s)", len(buckets), refreshedAt)
-
-	slog.Info("Loaded buckets from DB cache",
-		slog.Int("count", len(buckets)),
-		slog.String("refreshed-at", refreshedAt),
-	)
-
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.tree.Refresh()
-		a.statusBar.SetText(statusMsg)
-	}, false)
-}
-
-// loadBucketsFromS3 fetches buckets from S3 and stores them
-func (a *App) loadBucketsFromS3(startedAt time.Time) {
-	slog.Info("Loading S3 buckets")
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUI(func() {
 		a.statusBar.SetText("Loading buckets...")
-	}, true)
+	})
 
-	buckets, err := a.s3Client.ListBuckets(a.opCtx, nil)
+	result, err := a.svc.LoadBuckets(a.svc.OpCtx())
 	if err != nil {
 		slog.Error("Failed to load buckets", slogx.Error(err))
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.doUI(func() {
 			a.statusBar.SetText(fmt.Sprintf("Error: %v", err))
-		}, true)
+		})
 		return
 	}
 
-	a.treeData.setBuckets(buckets)
-
-	// Sort buckets according to current sort mode
+	a.treeData.setBuckets(result.Buckets)
 	a.sortBuckets()
 
+	if result.FromCache {
+		refreshedAt := result.RefreshedAt.Format(time.RFC3339)
+		statusMsg := fmt.Sprintf("Loaded %d bucket(s) from cache (last refreshed: %s)", len(result.Buckets), refreshedAt)
+		slog.Info("Loaded buckets from DB cache", slog.Int("count", len(result.Buckets)), slog.String("refreshed-at", refreshedAt))
+
+		a.doUIAsync(func() {
+			a.tree.Refresh()
+			a.statusBar.SetText(statusMsg)
+		})
+		return
+	}
+
+	// From S3 - need to enrich with encryption info
+	startedAt := time.Now()
+
 	// Create a cancellable context for this operation
-	ctx, cancel := context.WithCancel(a.opCtx)
+	ctx, cancel := context.WithCancel(a.svc.OpCtx())
 
 	// Create progress tracking channels
-	progressChan := make(chan bucketsLoadProgress, 1)
+	progressChan := make(chan service.BucketsProgress, 1)
 	doneChan := make(chan bucketsLoadResult, 1)
 
-	// Start the store operation in a goroutine
-	go a.performBucketsStore(ctx, startedAt, progressChan, doneChan)
-
-	// Show progress modal on UI thread
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.showBucketsLoadProgressModal(cancel, progressChan, doneChan)
-	}, false)
-}
-
-// performBucketsStore fetches encryption info and stores buckets to the database
-func (a *App) performBucketsStore(ctx context.Context, startedAt time.Time, progressChan chan<- bucketsLoadProgress, doneChan chan<- bucketsLoadResult) {
-	buckets := a.treeData.buckets
-
-	slog.Info("Reading encryption information and storing buckets to the storage", slog.Int("count", len(buckets)))
-
-	lastProgressUpdate := time.Now()
-
-	for i := range buckets {
-		// Check for cancellation
-		if ctx.Err() != nil {
-			doneChan <- bucketsLoadResult{success: false}
+	// Start the enrichment in a goroutine
+	go func() {
+		enriched, err := a.svc.StoreBucketsWithEncryption(ctx, result.Buckets, func(p service.BucketsProgress) {
+			progressChan <- p
+		})
+		if err != nil {
+			doneChan <- bucketsLoadResult{success: false, err: err}
 			return
 		}
-
-		// Fetch encryption configuration from S3
-		encryptionCfg, err := a.s3Client.GetBucketEncryption(ctx, buckets[i].Name)
-		if err != nil {
-			slog.Error("Failed to get bucket encryption", slogx.Error(err), slog.String("bucket", buckets[i].Name))
+		a.treeData.setBuckets(enriched)
+		doneChan <- bucketsLoadResult{
+			success: true,
+			count:   len(enriched),
+			elapsed: time.Since(startedAt),
 		}
-		buckets[i].Encryption = encryptionCfg
+	}()
 
-		// Try to load existing bucket details from storage to preserve metadata
-		var details models.BucketDetails
-		storedBucket, err := a.storage.GetBucket(ctx, a.sessionID, buckets[i].Name)
-		if err == nil && storedBucket != nil {
-			// Bucket exists in storage - deserialize and preserve existing metadata
-			if err := json.Unmarshal(storedBucket.Details, &details); err == nil {
-				// Update the basic bucket info but keep the metadata
-				details.Bucket = buckets[i]
-			} else {
-				// Failed to unmarshal, create new details
-				details = models.NewBucketDetails(buckets[i], nil)
-			}
-		} else {
-			// Bucket doesn't exist in storage yet, create new details
-			details = models.NewBucketDetails(buckets[i], nil)
-		}
+	// Show progress modal on UI thread
+	a.doUIAsync(func() {
+		a.showBucketsLoadProgressModal(cancel, progressChan, doneChan)
+	})
+}
 
-		if err := a.storage.UpsertBucket(ctx, a.sessionID, buckets[i].Name, buckets[i].CreationDate, details, encryptionCfg); err != nil {
-			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", buckets[i].Name))
-		}
-
-		// Send progress update at most once per second
-		if time.Since(lastProgressUpdate) >= time.Second {
-			progressChan <- bucketsLoadProgress{
-				elapsed:    time.Since(startedAt),
-				currentIdx: i + 1,
-				totalCount: len(buckets),
-			}
-			lastProgressUpdate = time.Now()
-		}
-	}
-
-	// Rebuild index since encryption pointers were updated in-place
-	a.treeData.rebuildBucketIndex()
-
-	elapsed := time.Since(startedAt)
-	slog.Info("Loaded buckets", slog.Int("count", len(buckets)), slog.Duration("elapsed", elapsed))
-
-	// Update session's buckets_refreshed_at timestamp
-	refreshedAt := time.Now()
-	if err := a.storage.UpdateSessionBucketsRefreshedAt(ctx, a.sessionID, refreshedAt); err != nil {
-		slog.Warn("Failed to update session buckets_refreshed_at", slogx.Error(err))
-	} else {
-		slog.Info("Updated session buckets_refreshed_at", slog.Time("refreshed-at", refreshedAt))
-	}
-
-	doneChan <- bucketsLoadResult{
-		success: true,
-		count:   len(buckets),
-		elapsed: elapsed,
-	}
+// bucketsLoadResult represents the final result of the buckets loading operation
+type bucketsLoadResult struct {
+	success bool
+	err     error
+	count   int
+	elapsed time.Duration
 }
 
 // showBucketsLoadProgressModal displays a modal dialog showing buckets loading progress
-func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressChan <-chan bucketsLoadProgress, doneChan <-chan bucketsLoadResult) {
+func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressChan <-chan service.BucketsProgress, doneChan <-chan bucketsLoadResult) {
 	startTime := time.Now()
 
 	// Create progress labels
@@ -270,7 +159,7 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 	progressBar := widget.NewProgressBar()
 
 	// Track the latest progress state
-	var latestProgress bucketsLoadProgress
+	var latestProgress service.BucketsProgress
 
 	// Create cancel button
 	cancelButton := widget.NewButton("Cancel", func() {
@@ -298,17 +187,17 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 
 	// Helper function to update the UI with current state
 	updateUI := func() {
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+		a.doUIAsync(func() {
 			elapsed := time.Since(startTime)
 			elapsedLabel.SetText(fmt.Sprintf("Elapsed: %s", elapsed.Round(time.Second)))
 
-			if latestProgress.totalCount > 0 {
-				progressBar.SetValue(float64(latestProgress.currentIdx) / float64(latestProgress.totalCount))
-				progressLabel.SetText(fmt.Sprintf("%s / %s", humanize.Comma(int64(latestProgress.currentIdx)), humanize.Comma(int64(latestProgress.totalCount))))
+			if latestProgress.TotalCount > 0 {
+				progressBar.SetValue(float64(latestProgress.CurrentIdx) / float64(latestProgress.TotalCount))
+				progressLabel.SetText(fmt.Sprintf("%s / %s", humanize.Comma(int64(latestProgress.CurrentIdx)), humanize.Comma(int64(latestProgress.TotalCount))))
 			}
 
 			dialog.Refresh()
-		}, false)
+		})
 	}
 
 	// Start goroutine to handle progress updates and ticker
@@ -325,7 +214,7 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 				updateUI()
 
 			case result := <-doneChan:
-				a.fyneApp.Driver().DoFromGoroutine(func() {
+				a.doUIAsync(func() {
 					dialog.Hide()
 
 					if !result.success {
@@ -340,7 +229,7 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 						a.tree.Refresh()
 						a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s) in %s", result.count, result.elapsed.Round(time.Millisecond)))
 					}
-				}, false)
+				})
 				return
 			}
 		}
@@ -350,68 +239,36 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 // loadBucketMetadata loads metadata for a specific bucket
 func (a *App) loadBucketMetadata(bucketName string) {
 	slog.Info("Loading metadata for bucket", slog.String("bucket", bucketName))
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUI(func() {
 		a.statusBar.SetText(fmt.Sprintf("Loading metadata for %s...", bucketName))
-	}, true)
+	})
 
-	// First, try to load from storage
-	storedBucket, err := a.storage.GetBucket(a.opCtx, a.sessionID, bucketName)
-	if err != nil {
-		slog.Warn("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
-	} else if storedBucket != nil {
-		// Deserialize stored details into BucketDetails
-		var details models.BucketDetails
-		if err := json.Unmarshal(storedBucket.Details, &details); err == nil {
-			// Check if the details contain metadata (not just basic bucket info)
-			if details.HasMetadata() {
-				slog.Info("Loading bucket metadata from storage", slog.String("bucket", bucketName))
-
-				// Convert to BucketMetadata
-				metadata := details.ToMetadata()
-				a.treeData.bucketMetadata[bucketName] = metadata
-
-				// Refresh tree on UI thread
-				a.fyneApp.Driver().DoFromGoroutine(func() {
-					a.tree.Refresh()
-					a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s (from cache)", bucketName))
-				}, false)
-				return
-			}
-		}
-	}
-
-	// Not in storage or no metadata, fetch from S3
-	slog.Info("Fetching bucket metadata from S3", slog.String("bucket", bucketName))
-	metadata, err := a.s3Client.GetBucketMetadata(a.opCtx, bucketName)
-	if err != nil {
-		slog.Error("Failed to load bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
-		a.fyneApp.Driver().DoFromGoroutine(func() {
-			a.statusBar.SetText(fmt.Sprintf("Error loading %s: %v", bucketName, err))
-		}, true)
-		return
-	}
-
-	a.treeData.bucketMetadata[bucketName] = metadata
-
-	// Find the bucket to get its creation date
+	// Find the bucket
 	var bucket models.Bucket
 	if b := a.treeData.bucketIndex[bucketName]; b != nil {
 		bucket = *b
 	}
 
-	// Store the metadata in storage using BucketDetails
-	details := models.NewBucketDetails(bucket, metadata)
-	if err := a.storage.UpsertBucket(a.opCtx, a.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
-		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
+	metadata, fromCache, err := a.svc.LoadBucketMetadata(a.svc.OpCtx(), bucket)
+	if err != nil {
+		slog.Error("Failed to load bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
+		a.doUI(func() {
+			a.statusBar.SetText(fmt.Sprintf("Error loading %s: %v", bucketName, err))
+		})
+		return
 	}
 
-	// Refresh tree on UI thread
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.tree.Refresh()
-		a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s", bucketName))
-	}, false)
+	a.treeData.bucketMetadata[bucketName] = metadata
 
-	slog.Info("Loaded bucket metadata", slog.String("bucket", bucketName))
+	statusSuffix := ""
+	if fromCache {
+		statusSuffix = " (from cache)"
+	}
+
+	a.doUIAsync(func() {
+		a.tree.Refresh()
+		a.statusBar.SetText(fmt.Sprintf("Loaded metadata for %s%s", bucketName, statusSuffix))
+	})
 }
 
 // showEncryptionDetails opens a window displaying the bucket encryption configuration as formatted JSON
@@ -433,7 +290,7 @@ func (a *App) showEncryptionDetails(bucketName string) {
 		return
 	}
 
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUIAsync(func() {
 		w := a.fyneApp.NewWindow(fmt.Sprintf("Encryption: %s", bucketName))
 		w.Resize(fyne.NewSize(600, 400))
 
@@ -443,5 +300,5 @@ func (a *App) showEncryptionDetails(bucketName string) {
 
 		w.SetContent(container.NewScroll(text))
 		w.Show()
-	}, false)
+	})
 }

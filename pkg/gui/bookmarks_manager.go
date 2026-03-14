@@ -1,7 +1,6 @@
 package gui
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/cappuccinotm/slogx"
 
 	"github.com/vgarvardt/stree/pkg/models"
-	"github.com/vgarvardt/stree/pkg/s3client"
 )
 
 const (
@@ -49,9 +47,9 @@ func (a *App) initBookmarkSelector() *widget.Select {
 	return a.bookmarkSelect
 }
 
-// refreshBookmarksList reloads bookmarks from storage and updates the dropdown
+// refreshBookmarksList reloads bookmarks from service and updates the dropdown
 func (a *App) refreshBookmarksList() {
-	bookmarks, err := a.storage.ListBookmarks(a.ctx)
+	bookmarks, err := a.svc.ListBookmarks(a.svc.OpCtx())
 	if err != nil {
 		slog.Error("Failed to load bookmarks", slogx.Error(err))
 		return
@@ -70,8 +68,8 @@ func (a *App) refreshBookmarksList() {
 	a.bookmarkSelect.Refresh()
 
 	// Update current selection if we have an active bookmark
-	if a.activeBookmark != nil {
-		a.bookmarkSelect.SetSelected(a.activeBookmark.Title)
+	if a.svc.ActiveBookmark() != nil {
+		a.bookmarkSelect.SetSelected(a.svc.ActiveBookmark().Title)
 	} else {
 		a.bookmarkSelect.SetSelected("")
 	}
@@ -80,103 +78,25 @@ func (a *App) refreshBookmarksList() {
 // connectToBookmark establishes connection using the specified bookmark
 func (a *App) connectToBookmark(bookmarkTitle string) {
 	// Check if already connected to this bookmark
-	if a.activeBookmark != nil && a.activeBookmark.Title == bookmarkTitle {
+	if a.svc.ActiveBookmark() != nil && a.svc.ActiveBookmark().Title == bookmarkTitle {
 		slog.Debug("Already connected to bookmark", slog.String("title", bookmarkTitle))
 		return
 	}
 
-	// Find the bookmark by title
-	bookmarks, err := a.storage.ListBookmarks(a.ctx)
-	if err != nil {
-		a.fyneApp.Driver().DoFromGoroutine(func() {
-			a.statusBar.SetText(fmt.Sprintf("Error loading bookmarks: %v", err))
-		}, false)
-		return
-	}
+	a.doUIAsync(func() {
+		a.statusBar.SetText(fmt.Sprintf("Connecting to %s...", bookmarkTitle))
+	})
 
-	var bookmark *models.Bookmark
-	for i := range bookmarks {
-		if bookmarks[i].Title == bookmarkTitle {
-			bookmark = &bookmarks[i]
-			break
-		}
-	}
-
-	if bookmark == nil {
-		a.fyneApp.Driver().DoFromGoroutine(func() {
-			a.statusBar.SetText("Bookmark not found: " + bookmarkTitle)
-		}, false)
-		return
-	}
-
-	// Get secret key from credential store
-	secretKey := ""
-	if a.credStore != nil {
-		var err error
-		secretKey, err = a.credStore.GetSecretKey(a.ctx, bookmark.ID)
-		if err != nil {
-			slog.Error("Failed to retrieve secret key", slogx.Error(err))
-			a.fyneApp.Driver().DoFromGoroutine(func() {
-				a.statusBar.SetText(fmt.Sprintf("Error: %v", err))
-			}, false)
-			return
-		}
-	}
-
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		a.statusBar.SetText(fmt.Sprintf("Connecting to %s...", bookmark.Title))
-	}, false)
-
-	// Create S3 client
-	s3Cfg := s3client.Config{
-		Endpoint:     bookmark.Endpoint,
-		Region:       bookmark.Region,
-		AccessKey:    bookmark.AccessKeyID,
-		SecretKey:    secretKey,
-		SessionToken: bookmark.SessionToken,
-		Debug:        a.verbose,
-	}
-
-	s3Client, err := s3client.NewClient(context.Background(), s3Cfg, a.version)
-	if err != nil {
-		slog.Error("Failed to create S3 client", slogx.Error(err))
-		a.fyneApp.Driver().DoFromGoroutine(func() {
+	if err := a.svc.Connect(a.svc.OpCtx(), bookmarkTitle); err != nil {
+		slog.Error("Failed to connect to bookmark", slogx.Error(err))
+		a.doUIAsync(func() {
 			a.statusBar.SetText(fmt.Sprintf("Connection failed: %v", err))
-		}, false)
+		})
 		return
 	}
 
-	// Store session
-	sessionID, err := a.storage.UpsertSession(a.ctx, s3Cfg.String())
-	if err != nil {
-		slog.Error("Failed to store session", slogx.Error(err))
-		a.fyneApp.Driver().DoFromGoroutine(func() {
-			a.statusBar.SetText(fmt.Sprintf("Error: %v", err))
-		}, false)
-		return
-	}
-
-	// Update last used timestamp
-	if err := a.storage.UpdateBookmarkLastUsed(a.ctx, bookmark.ID); err != nil {
-		slog.Warn("Failed to update bookmark last used", slogx.Error(err))
-	}
-
-	// Cancel any in-flight operations from the previous connection
-	a.resetOperationContext()
-
-	// Update app state
-	a.s3Client = s3Client
-	a.sessionID = sessionID
-	a.activeBookmark = bookmark
-
-	slog.Info("Connected to bookmark",
-		slog.String("title", bookmark.Title),
-		slog.String("endpoint", bookmark.Endpoint),
-		slog.Int64("session-id", sessionID),
-	)
-
-	// Update selection (this may trigger OnChanged, but the check at the top will prevent reconnection)
-	a.bookmarkSelect.SetSelected(bookmark.Title)
+	// Update selection
+	a.bookmarkSelect.SetSelected(bookmarkTitle)
 
 	// Load buckets
 	go a.loadBuckets()
@@ -184,14 +104,7 @@ func (a *App) connectToBookmark(bookmarkTitle string) {
 
 // disconnect closes the current S3 connection and clears buckets
 func (a *App) disconnect() {
-	// Cancel any in-flight operations
-	if a.opCancel != nil {
-		a.opCancel()
-	}
-
-	a.s3Client = nil
-	a.sessionID = 0
-	a.activeBookmark = nil
+	a.svc.Disconnect()
 
 	// Clear buckets and metadata
 	a.treeData.setBuckets([]models.Bucket{})
@@ -207,17 +120,15 @@ func (a *App) disconnect() {
 	a.closeMPUWindow()
 
 	// Refresh tree
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUIAsync(func() {
 		a.tree.Refresh()
 		a.statusBar.SetText("Disconnected")
-	}, false)
-
-	slog.Info("Disconnected from S3")
+	})
 }
 
 // showManageBookmarksDialog displays a dialog for managing bookmarks
 func (a *App) showManageBookmarksDialog() {
-	bookmarks, err := a.storage.ListBookmarks(a.ctx)
+	bookmarks, err := a.svc.ListBookmarks(a.svc.OpCtx())
 	if err != nil {
 		dialog.ShowError(fmt.Errorf("failed to load bookmarks: %w", err), a.window)
 		return

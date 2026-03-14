@@ -11,6 +11,7 @@ import (
 
 	"github.com/vgarvardt/stree/pkg/gui"
 	"github.com/vgarvardt/stree/pkg/logging"
+	"github.com/vgarvardt/stree/pkg/service"
 	"github.com/vgarvardt/stree/pkg/storage"
 )
 
@@ -61,8 +62,9 @@ func main() {
 				slog.Bool("storage-purge", storagePurge),
 			)
 
-			// Launch the GUI application
-			app := gui.NewApp(stor, credStore, verbose, version)
+			// Create the service layer and launch the GUI application
+			svc := service.New(stor, credStore, verbose, version)
+			app := gui.NewApp(svc, version)
 
 			return app.Run(ctx)
 		},

@@ -13,7 +13,6 @@ import (
 	"github.com/dustin/go-humanize"
 
 	"github.com/vgarvardt/stree/pkg/models"
-	"github.com/vgarvardt/stree/pkg/storage"
 )
 
 const mpuListLimit = 1000
@@ -21,7 +20,7 @@ const mpuListLimit = 1000
 // showMPUList opens a modal window displaying multipart uploads in the bucket
 func (a *App) showMPUList(bucketName string) {
 	// Create and show the window on the Fyne UI thread
-	a.fyneApp.Driver().DoFromGoroutine(func() {
+	a.doUIAsync(func() {
 		// If an MPU window is already open, close it first
 		if a.mpuWindow != nil {
 			a.mpuWindow.Close()
@@ -54,7 +53,7 @@ func (a *App) showMPUList(bucketName string) {
 
 		// Load MPUs asynchronously after the window is shown
 		go mpuView.loadMPUs()
-	}, false)
+	})
 }
 
 // mpuListView manages the MPU list UI state
@@ -62,7 +61,6 @@ type mpuListView struct {
 	app        *App
 	window     fyne.Window
 	bucketName string
-	bucketID   int64
 
 	// UI components
 	table         *widget.Table
@@ -202,70 +200,34 @@ func (v *mpuListView) createTable() *widget.Table {
 	return table
 }
 
-// loadMPUs loads multipart uploads from storage
+// loadMPUs loads multipart uploads from storage via the service
 func (v *mpuListView) loadMPUs() {
 	slog.Info("Loading MPU list", slog.String("bucket", v.bucketName))
 
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+	v.app.doUI(func() {
 		v.statusBar.SetText("Loading multipart uploads...")
 		v.refreshButton.Disable()
-	}, true)
+	})
 
-	// Get bucket ID - first try from storage
-	bucket, err := v.app.storage.GetBucket(v.app.opCtx, v.app.sessionID, v.bucketName)
+	sortDesc := v.sortSelect.Selected == "Date ↓"
+
+	uploads, err := v.app.svc.ListMPUs(v.app.svc.OpCtx(), v.bucketName, sortDesc, mpuListLimit)
 	if err != nil {
-		slog.Error("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
+		slog.Error("Failed to list MPUs", slogx.Error(err), slog.String("bucket", v.bucketName))
+		v.app.doUI(func() {
 			v.statusBar.SetText(fmt.Sprintf("Error: %v", err))
 			v.refreshButton.Enable()
-		}, true)
+		})
 		return
 	}
 
-	if bucket == nil {
-		slog.Error("Bucket not found in storage", slog.String("bucket", v.bucketName))
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
-			v.statusBar.SetText("Bucket not found")
-			v.refreshButton.Enable()
-		}, true)
-		return
-	}
-
-	v.bucketID = bucket.ID
-
-	// Build list options
-	opts := storage.MPUListOptions{
-		Limit: mpuListLimit,
-	}
-
-	// Apply sorting
-	switch v.sortSelect.Selected {
-	case "Date ↓":
-		opts.OrderDesc = true
-	case "Date ↑":
-		opts.OrderDesc = false
-	}
-
-	// Load from storage only - never fetch from S3
-	uploads, err := v.app.storage.ListMultipartUploadsByBucket(v.app.opCtx, v.bucketID, opts)
-	if err != nil {
-		slog.Error("Failed to list MPUs from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
-			v.statusBar.SetText(fmt.Sprintf("Error: %v", err))
-			v.refreshButton.Enable()
-		}, true)
-		return
-	}
-
-	// Check if we have uploads in storage
 	if len(uploads) == 0 {
-		slog.Info("No MPUs found in storage", slog.String("bucket", v.bucketName))
 		v.uploads = []models.MultipartUploadWithParts{}
-		v.app.fyneApp.Driver().DoFromGoroutine(func() {
+		v.app.doUIAsync(func() {
 			v.table.Refresh()
 			v.statusBar.SetText("No multipart uploads in cache. Use 'Refresh' on the MPUs metadata in the tree to load.")
 			v.refreshButton.Enable()
-		}, false)
+		})
 		return
 	}
 
@@ -273,21 +235,21 @@ func (v *mpuListView) loadMPUs() {
 
 	v.uploads = uploads
 
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+	v.app.doUIAsync(func() {
 		v.table.Refresh()
 		v.statusBar.SetText(fmt.Sprintf("Loaded %d multipart upload(s) from cache", len(v.uploads)))
 		v.refreshButton.Enable()
-	}, false)
+	})
 }
 
 // refreshMPUs clears the current view and instructs user to refresh from the main tree
 func (v *mpuListView) refreshMPUs() {
 	slog.Info("Refresh requested for MPU list", slog.String("bucket", v.bucketName))
 
-	v.app.fyneApp.Driver().DoFromGoroutine(func() {
+	v.app.doUI(func() {
 		v.statusBar.SetText("To refresh MPUs, use 'Refresh' on the MPUs metadata in the main tree view.")
 		v.refreshButton.Enable()
-	}, true)
+	})
 }
 
 // initializeSelections sets the initial selections for dropdowns without triggering callbacks
