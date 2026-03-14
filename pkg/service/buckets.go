@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cappuccinotm/slogx"
@@ -114,27 +116,82 @@ func (s *Service) LoadBuckets(ctx context.Context) (*BucketsLoadResult, error) {
 	}, nil
 }
 
-// StoreBucketsWithEncryption fetches encryption info for each bucket, stores them in the DB,
-// and updates the session timestamp. The progress callback is called periodically.
+// StoreBucketsWithEncryption fetches encryption info for each bucket concurrently (up to 7 at a time),
+// then stores all buckets to the DB sequentially. The progress callback is called periodically.
 // Returns the enriched buckets slice (same slice, mutated in place).
 func (s *Service) StoreBucketsWithEncryption(ctx context.Context, buckets []models.Bucket, progress func(BucketsProgress)) ([]models.Bucket, error) {
-	slog.Info("Reading encryption information and storing buckets to the storage", slog.Int("count", len(buckets)))
+	slog.Info("Fetching encryption information for buckets", slog.Int("count", len(buckets)))
 
-	lastProgressUpdate := time.Now()
+	// Phase 1: fetch encryption info concurrently
+	const maxConcurrency = 7
+
+	var completed atomic.Int64
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+
+	// Report progress in a background goroutine
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lastReport := time.Now()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+				if progress != nil && time.Since(lastReport) >= time.Second {
+					c := int(completed.Load())
+					progress(BucketsProgress{CurrentIdx: c, TotalCount: len(buckets)})
+					lastReport = time.Now()
+					if c >= len(buckets) {
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	for i := range buckets {
+		if ctx.Err() != nil {
+			break
+		}
+
+		wg.Add(1)
+		sem <- struct{}{} // acquire slot
+
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }() // release slot
+
+			if ctx.Err() != nil {
+				completed.Add(1)
+				return
+			}
+
+			encryptionCfg, err := s.s3Client.GetBucketEncryption(ctx, buckets[idx].Name)
+			if err != nil {
+				slog.Error("Failed to get bucket encryption", slogx.Error(err), slog.String("bucket", buckets[idx].Name))
+			}
+			buckets[idx].Encryption = encryptionCfg
+			completed.Add(1)
+		}(i)
+	}
+
+	wg.Wait()
+	<-done // wait for progress goroutine to exit
+
+	if ctx.Err() != nil {
+		return buckets, ctx.Err()
+	}
+
+	// Phase 2: store all buckets to DB sequentially
+	slog.Info("Storing buckets to the storage", slog.Int("count", len(buckets)))
 
 	for i := range buckets {
 		if ctx.Err() != nil {
 			return buckets, ctx.Err()
 		}
 
-		// Fetch encryption configuration from S3
-		encryptionCfg, err := s.s3Client.GetBucketEncryption(ctx, buckets[i].Name)
-		if err != nil {
-			slog.Error("Failed to get bucket encryption", slogx.Error(err), slog.String("bucket", buckets[i].Name))
-		}
-		buckets[i].Encryption = encryptionCfg
-
-		// Try to load existing bucket details from storage to preserve metadata
 		var details models.BucketDetails
 		storedBucket, err := s.storage.GetBucket(ctx, s.sessionID, buckets[i].Name)
 		if err == nil && storedBucket != nil {
@@ -147,16 +204,8 @@ func (s *Service) StoreBucketsWithEncryption(ctx context.Context, buckets []mode
 			details = models.NewBucketDetails(buckets[i], nil)
 		}
 
-		if err := s.storage.UpsertBucket(ctx, s.sessionID, buckets[i].Name, buckets[i].CreationDate, details, encryptionCfg); err != nil {
+		if err := s.storage.UpsertBucket(ctx, s.sessionID, buckets[i].Name, buckets[i].CreationDate, details, buckets[i].Encryption); err != nil {
 			slog.Warn("Failed to store bucket to storage", slogx.Error(err), slog.String("bucket", buckets[i].Name))
-		}
-
-		if progress != nil && time.Since(lastProgressUpdate) >= time.Second {
-			progress(BucketsProgress{
-				CurrentIdx: i + 1,
-				TotalCount: len(buckets),
-			})
-			lastProgressUpdate = time.Now()
 		}
 	}
 
