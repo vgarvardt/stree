@@ -247,7 +247,7 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 		return nil, nil, fmt.Errorf("failed to list object versions: %w", err)
 	}
 
-	var versions []models.ObjectVersion
+	versions := make([]models.ObjectVersion, 0, len(output.Versions)+len(output.DeleteMarkers))
 
 	// Process object versions
 	for _, ver := range output.Versions {

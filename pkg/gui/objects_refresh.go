@@ -47,7 +47,7 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 	a.closeObjectsWindow()
 
 	// Create a cancellable context for this operation
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancel := context.WithCancel(a.opCtx)
 	// Don't use defer cancel() here - let the cancel button handle it
 	// The context will be cleaned up when the function returns
 
@@ -149,11 +149,8 @@ func (a *App) performObjectsRefresh(ctx context.Context, bucketName string, star
 
 	// Find the bucket to get its creation date
 	var bucket models.Bucket
-	for _, b := range a.treeData.buckets {
-		if b.Name == bucketName {
-			bucket = b
-			break
-		}
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		bucket = *b
 	}
 
 	// Store the updated metadata in storage

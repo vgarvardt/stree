@@ -44,7 +44,7 @@ func (a *App) refreshMPUsMetadata(bucketName string) {
 	a.closeMPUWindow()
 
 	// Create a cancellable context for this operation
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancel := context.WithCancel(a.opCtx)
 
 	// Create progress tracking channels
 	progressChan := make(chan mpuRefreshProgress, 1)
@@ -137,11 +137,8 @@ func (a *App) performMPURefresh(ctx context.Context, bucketName string, startedA
 
 	// Find the bucket to get its creation date
 	var bucket models.Bucket
-	for _, b := range a.treeData.buckets {
-		if b.Name == bucketName {
-			bucket = b
-			break
-		}
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		bucket = *b
 	}
 
 	// Store the updated metadata in storage

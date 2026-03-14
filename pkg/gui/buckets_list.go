@@ -50,6 +50,9 @@ func (a *App) sortBuckets() {
 			return a.treeData.buckets[i].CreationDate.After(a.treeData.buckets[j].CreationDate)
 		})
 	}
+
+	// Rebuild the index since sorting shuffles the backing array
+	a.treeData.rebuildBucketIndex()
 }
 
 // showBucketContextMenu displays a context menu for a bucket

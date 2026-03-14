@@ -64,10 +64,12 @@ type App struct {
 	statusBar *widget.Label
 	treeData  *TreeData
 
-	ctx     context.Context
-	storage *storage.Storage
-	version string
-	verbose bool
+	ctx      context.Context
+	opCtx    context.Context    // cancellable context for current bookmark operations
+	opCancel context.CancelFunc // cancels opCtx on bookmark switch / disconnect
+	storage  *storage.Storage
+	version  string
+	verbose  bool
 
 	s3Client  *s3client.Client
 	sessionID int64
@@ -87,9 +89,25 @@ type App struct {
 // TreeData holds the hierarchical data for the tree widget
 type TreeData struct {
 	buckets        []models.Bucket
+	bucketIndex    map[string]*models.Bucket         // O(1) lookup by name
 	bucketMetadata map[string]*models.BucketMetadata // bucketName -> metadata
 	searchFilter   string                            // search filter for bucket names
 	sortMode       SortMode                          // current sorting mode
+}
+
+// setBuckets replaces the bucket list and rebuilds the name index.
+func (td *TreeData) setBuckets(buckets []models.Bucket) {
+	td.buckets = buckets
+	td.rebuildBucketIndex()
+}
+
+// rebuildBucketIndex rebuilds the name→bucket pointer map from the current slice.
+// Must be called after sorting or modifying individual bucket entries.
+func (td *TreeData) rebuildBucketIndex() {
+	td.bucketIndex = make(map[string]*models.Bucket, len(td.buckets))
+	for i := range td.buckets {
+		td.bucketIndex[td.buckets[i].Name] = &td.buckets[i]
+	}
 }
 
 // NewApp creates a new GUI application
@@ -102,6 +120,7 @@ func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, verbose b
 		credStore: credStore,
 		treeData: &TreeData{
 			buckets:        []models.Bucket{},
+			bucketIndex:    make(map[string]*models.Bucket),
 			bucketMetadata: make(map[string]*models.BucketMetadata),
 			searchFilter:   "",
 			sortMode:       sortNameAsc, // Default sorting
@@ -109,9 +128,19 @@ func NewApp(stor *storage.Storage, credStore *storage.CredentialStore, verbose b
 	}
 }
 
+// resetOperationContext cancels any in-flight operations for the current bookmark
+// and creates a fresh context for the new connection.
+func (a *App) resetOperationContext() {
+	if a.opCancel != nil {
+		a.opCancel()
+	}
+	a.opCtx, a.opCancel = context.WithCancel(a.ctx)
+}
+
 // Run starts the GUI application
 func (a *App) Run(ctx context.Context) error {
 	a.ctx = ctx
+	a.resetOperationContext()
 
 	a.window = a.fyneApp.NewWindow("STree Browser")
 	a.window.Resize(fyne.NewSize(1000, 700))
@@ -227,11 +256,8 @@ func (a *App) createTree() *widget.Tree {
 				}
 
 				// Add encryption item if bucket has encryption configured
-				for _, b := range a.treeData.buckets {
-					if b.Name == bucketName && b.Encryption != nil {
-						items = append(items, uidPrefixMeta+bucketName+":encryption")
-						break
-					}
+				if b := a.treeData.bucketIndex[bucketName]; b != nil && b.Encryption != nil {
+					items = append(items, uidPrefixMeta+bucketName+":encryption")
 				}
 
 				items = append(items,
@@ -302,11 +328,9 @@ func (a *App) createTree() *widget.Tree {
 
 				bucketName := uid[len(uidPrefixBucket):]
 				var hasEncryption bool
-				for _, bucket := range a.treeData.buckets {
-					if bucket.Name == bucketName {
-						label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
-						hasEncryption = bucket.Encryption != nil
-					}
+				if bucket := a.treeData.bucketIndex[bucketName]; bucket != nil {
+					label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
+					hasEncryption = bucket.Encryption != nil
 				}
 
 				// Update folder icon based on branch open/closed state and encryption
@@ -362,15 +386,11 @@ func (a *App) createTree() *widget.Tree {
 
 				switch fieldName {
 				case "created":
-					for _, bucket := range a.treeData.buckets {
-						if bucket.Name == bucketName {
-							label.SetText("Created: " + bucket.CreationDate.Format(time.RFC3339))
-							icon.SetResource(theme.HistoryIcon())
-							tappable.onSecondaryTap = nil
-							return
-						}
+					if bucket := a.treeData.bucketIndex[bucketName]; bucket != nil {
+						label.SetText("Created: " + bucket.CreationDate.Format(time.RFC3339))
+					} else {
+						label.SetText("Created: Unknown")
 					}
-					label.SetText("Created: Unknown")
 					icon.SetResource(theme.HistoryIcon())
 					tappable.onSecondaryTap = nil
 				case "versioning":

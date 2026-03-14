@@ -212,7 +212,7 @@ func (v *mpuListView) loadMPUs() {
 	}, true)
 
 	// Get bucket ID - first try from storage
-	bucket, err := v.app.storage.GetBucket(v.app.ctx, v.app.sessionID, v.bucketName)
+	bucket, err := v.app.storage.GetBucket(v.app.opCtx, v.app.sessionID, v.bucketName)
 	if err != nil {
 		slog.Error("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
 		v.app.fyneApp.Driver().DoFromGoroutine(func() {
@@ -247,7 +247,7 @@ func (v *mpuListView) loadMPUs() {
 	}
 
 	// Load from storage only - never fetch from S3
-	uploads, err := v.app.storage.ListMultipartUploadsByBucket(v.app.ctx, v.bucketID, opts)
+	uploads, err := v.app.storage.ListMultipartUploadsByBucket(v.app.opCtx, v.bucketID, opts)
 	if err != nil {
 		slog.Error("Failed to list MPUs from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
 		v.app.fyneApp.Driver().DoFromGoroutine(func() {

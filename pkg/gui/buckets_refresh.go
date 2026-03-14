@@ -51,7 +51,7 @@ func (a *App) refreshBuckets() {
 	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
 
 	// Invalidate storage cache by deleting the current session
-	newSessionID, err := a.storage.InvalidateSession(a.ctx, a.sessionID)
+	newSessionID, err := a.storage.InvalidateSession(a.opCtx, a.sessionID)
 	if err != nil {
 		slog.Warn("Failed to invalidate storage cache", slogx.Error(err))
 	}
@@ -74,7 +74,7 @@ func (a *App) refreshSingleBucket(bucketName string) {
 	delete(a.treeData.bucketMetadata, bucketName)
 
 	// Delete bucket from storage to force refresh
-	if err := a.storage.DeleteBucket(a.ctx, a.sessionID, bucketName); err != nil {
+	if err := a.storage.DeleteBucket(a.opCtx, a.sessionID, bucketName); err != nil {
 		slog.Warn("Failed to delete bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
 	}
 
@@ -87,7 +87,7 @@ func (a *App) loadBuckets() {
 	startedAt := time.Now()
 
 	// Check if the session already has a cached buckets list
-	session, err := a.storage.GetSessionByID(a.ctx, a.sessionID)
+	session, err := a.storage.GetSessionByID(a.opCtx, a.sessionID)
 	if err != nil {
 		slog.Warn("Failed to get session", slogx.Error(err))
 	}
@@ -109,7 +109,7 @@ func (a *App) loadBucketsFromCache(session *storage.Session) {
 		a.statusBar.SetText("Loading buckets from cache...")
 	}, true)
 
-	storedBuckets, err := a.storage.GetBucketsBySession(a.ctx, a.sessionID)
+	storedBuckets, err := a.storage.GetBucketsBySession(a.opCtx, a.sessionID)
 	if err != nil {
 		slog.Error("Failed to load buckets from cache", slogx.Error(err))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
@@ -129,7 +129,7 @@ func (a *App) loadBucketsFromCache(session *storage.Session) {
 		buckets = append(buckets, bucket)
 	}
 
-	a.treeData.buckets = buckets
+	a.treeData.setBuckets(buckets)
 
 	// Sort buckets according to current sort mode
 	a.sortBuckets()
@@ -155,7 +155,7 @@ func (a *App) loadBucketsFromS3(startedAt time.Time) {
 		a.statusBar.SetText("Loading buckets...")
 	}, true)
 
-	buckets, err := a.s3Client.ListBuckets(a.ctx, nil)
+	buckets, err := a.s3Client.ListBuckets(a.opCtx, nil)
 	if err != nil {
 		slog.Error("Failed to load buckets", slogx.Error(err))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
@@ -164,13 +164,13 @@ func (a *App) loadBucketsFromS3(startedAt time.Time) {
 		return
 	}
 
-	a.treeData.buckets = buckets
+	a.treeData.setBuckets(buckets)
 
 	// Sort buckets according to current sort mode
 	a.sortBuckets()
 
 	// Create a cancellable context for this operation
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancel := context.WithCancel(a.opCtx)
 
 	// Create progress tracking channels
 	progressChan := make(chan bucketsLoadProgress, 1)
@@ -238,6 +238,9 @@ func (a *App) performBucketsStore(ctx context.Context, startedAt time.Time, prog
 			lastProgressUpdate = time.Now()
 		}
 	}
+
+	// Rebuild index since encryption pointers were updated in-place
+	a.treeData.rebuildBucketIndex()
 
 	elapsed := time.Since(startedAt)
 	slog.Info("Loaded buckets", slog.Int("count", len(buckets)), slog.Duration("elapsed", elapsed))
@@ -352,7 +355,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 	}, true)
 
 	// First, try to load from storage
-	storedBucket, err := a.storage.GetBucket(a.ctx, a.sessionID, bucketName)
+	storedBucket, err := a.storage.GetBucket(a.opCtx, a.sessionID, bucketName)
 	if err != nil {
 		slog.Warn("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", bucketName))
 	} else if storedBucket != nil {
@@ -379,7 +382,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 
 	// Not in storage or no metadata, fetch from S3
 	slog.Info("Fetching bucket metadata from S3", slog.String("bucket", bucketName))
-	metadata, err := a.s3Client.GetBucketMetadata(a.ctx, bucketName)
+	metadata, err := a.s3Client.GetBucketMetadata(a.opCtx, bucketName)
 	if err != nil {
 		slog.Error("Failed to load bucket metadata", slogx.Error(err), slog.String("bucket", bucketName))
 		a.fyneApp.Driver().DoFromGoroutine(func() {
@@ -392,16 +395,13 @@ func (a *App) loadBucketMetadata(bucketName string) {
 
 	// Find the bucket to get its creation date
 	var bucket models.Bucket
-	for _, b := range a.treeData.buckets {
-		if b.Name == bucketName {
-			bucket = b
-			break
-		}
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		bucket = *b
 	}
 
 	// Store the metadata in storage using BucketDetails
 	details := models.NewBucketDetails(bucket, metadata)
-	if err := a.storage.UpsertBucket(a.ctx, a.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
+	if err := a.storage.UpsertBucket(a.opCtx, a.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
 		slog.Warn("Failed to store bucket metadata to storage", slogx.Error(err), slog.String("bucket", bucketName))
 	}
 
@@ -418,11 +418,8 @@ func (a *App) loadBucketMetadata(bucketName string) {
 func (a *App) showEncryptionDetails(bucketName string) {
 	// Find the bucket to get its encryption config
 	var encryption *models.BucketEncryption
-	for _, b := range a.treeData.buckets {
-		if b.Name == bucketName {
-			encryption = b.Encryption
-			break
-		}
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		encryption = b.Encryption
 	}
 
 	if encryption == nil {

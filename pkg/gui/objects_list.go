@@ -239,7 +239,7 @@ func (v *objectsListView) loadObjects() {
 	}, true)
 
 	// Get bucket ID - first try from storage
-	bucket, err := v.app.storage.GetBucket(v.app.ctx, v.app.sessionID, v.bucketName)
+	bucket, err := v.app.storage.GetBucket(v.app.opCtx, v.app.sessionID, v.bucketName)
 	if err != nil {
 		slog.Error("Failed to get bucket from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
 		v.app.fyneApp.Driver().DoFromGoroutine(func() {
@@ -254,13 +254,7 @@ func (v *objectsListView) loadObjects() {
 		slog.Warn("Bucket not found in storage, attempting to store it", slog.String("bucket", v.bucketName))
 
 		// Find bucket in app's in-memory data
-		var foundBucket *models.Bucket
-		for _, b := range v.app.treeData.buckets {
-			if b.Name == v.bucketName {
-				foundBucket = &b
-				break
-			}
-		}
+		foundBucket := v.app.treeData.bucketIndex[v.bucketName]
 
 		if foundBucket == nil {
 			slog.Error("Bucket not found in app data", slog.String("bucket", v.bucketName))
@@ -274,7 +268,7 @@ func (v *objectsListView) loadObjects() {
 		// Store the bucket with metadata if available
 		metadata := v.app.treeData.bucketMetadata[v.bucketName]
 		details := models.NewBucketDetails(*foundBucket, metadata)
-		if err := v.app.storage.UpsertBucket(v.app.ctx, v.app.sessionID, foundBucket.Name, foundBucket.CreationDate, details, foundBucket.Encryption); err != nil {
+		if err := v.app.storage.UpsertBucket(v.app.opCtx, v.app.sessionID, foundBucket.Name, foundBucket.CreationDate, details, foundBucket.Encryption); err != nil {
 			slog.Error("Failed to store bucket", slogx.Error(err), slog.String("bucket", v.bucketName))
 			v.app.fyneApp.Driver().DoFromGoroutine(func() {
 				v.statusBar.SetText(fmt.Sprintf("Error storing bucket: %v", err))
@@ -284,7 +278,7 @@ func (v *objectsListView) loadObjects() {
 		}
 
 		// Now try to get it again
-		bucket, err = v.app.storage.GetBucket(v.app.ctx, v.app.sessionID, v.bucketName)
+		bucket, err = v.app.storage.GetBucket(v.app.opCtx, v.app.sessionID, v.bucketName)
 		if err != nil || bucket == nil {
 			slog.Error("Failed to get bucket after storing", slogx.Error(err), slog.String("bucket", v.bucketName))
 			v.app.fyneApp.Driver().DoFromGoroutine(func() {
@@ -329,7 +323,7 @@ func (v *objectsListView) loadObjects() {
 	}
 
 	// Load from storage only - never fetch from S3
-	storageObjects, err := v.app.storage.ListObjectsByBucket(v.app.ctx, v.bucketID, opts)
+	storageObjects, err := v.app.storage.ListObjectsByBucket(v.app.opCtx, v.bucketID, opts)
 	if err != nil {
 		slog.Error("Failed to list objects from storage", slogx.Error(err), slog.String("bucket", v.bucketName))
 		v.app.fyneApp.Driver().DoFromGoroutine(func() {

@@ -161,6 +161,9 @@ func (a *App) connectToBookmark(bookmarkTitle string) {
 		slog.Warn("Failed to update bookmark last used", slogx.Error(err))
 	}
 
+	// Cancel any in-flight operations from the previous connection
+	a.resetOperationContext()
+
 	// Update app state
 	a.s3Client = s3Client
 	a.sessionID = sessionID
@@ -181,12 +184,17 @@ func (a *App) connectToBookmark(bookmarkTitle string) {
 
 // disconnect closes the current S3 connection and clears buckets
 func (a *App) disconnect() {
+	// Cancel any in-flight operations
+	if a.opCancel != nil {
+		a.opCancel()
+	}
+
 	a.s3Client = nil
 	a.sessionID = 0
 	a.activeBookmark = nil
 
 	// Clear buckets and metadata
-	a.treeData.buckets = []models.Bucket{}
+	a.treeData.setBuckets([]models.Bucket{})
 	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
 
 	// Clear selection
