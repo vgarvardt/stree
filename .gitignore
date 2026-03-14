@@ -8,7 +8,7 @@
 *.so
 *.dylib
 stree.bin
-storage.db
+storage.db*
 
 # Test binary, built with `go test -c`
 *.test

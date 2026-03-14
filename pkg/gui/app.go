@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/dustin/go-humanize"
 
+	"github.com/vgarvardt/stree/assets"
 	"github.com/vgarvardt/stree/pkg/models"
 	"github.com/vgarvardt/stree/pkg/service"
 )
@@ -69,8 +70,11 @@ func (td *TreeData) rebuildBucketIndex() {
 
 // NewApp creates a new GUI application
 func NewApp(svc *service.Service, version string) *App {
+	fyneApp := app.New()
+	fyneApp.SetIcon(assets.AppIcon)
+
 	return &App{
-		fyneApp: app.New(),
+		fyneApp: fyneApp,
 		version: version,
 		svc:     svc,
 		treeData: &TreeData{

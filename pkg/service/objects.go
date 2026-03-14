@@ -171,7 +171,7 @@ func (s *Service) fetchAndStoreObjectVersions(ctx context.Context, bucketName st
 				LatestVersionCount: aggregates.latestVersionCount,
 				LatestVersionSize:  aggregates.latestVersionSize,
 				DeleteMarkerCount:  aggregates.deleteMarkerCount,
-				Phase:              fmt.Sprintf("Fetching and storing object versions... (%d processed)", aggregates.fetchedCount),
+				Phase:              fmt.Sprintf("Fetching and storing object versions... (%s processed)", humanize.Comma(int64(aggregates.fetchedCount))),
 			})
 			lastProgressUpdate = time.Now()
 		}
