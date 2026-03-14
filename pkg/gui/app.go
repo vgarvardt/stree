@@ -70,6 +70,7 @@ func (td *TreeData) rebuildBucketIndex() {
 
 // NewApp creates a new GUI application
 func NewApp(svc *service.Service, version string) *App {
+
 	fyneApp := app.New()
 	fyneApp.SetIcon(assets.AppIcon)
 

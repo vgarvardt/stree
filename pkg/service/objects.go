@@ -268,6 +268,111 @@ func (s *Service) ListObjects(ctx context.Context, bucketName string, sortMode O
 	return objects, nil
 }
 
+// ForgetProgress represents the current progress of a forget operation.
+type ForgetProgress struct {
+	Phase        string
+	TotalCount   int64
+	DeletedCount int64
+}
+
+// ForgetBucketObjects deletes all cached objects for a bucket in batches,
+// resets the objects metadata, and vacuums the database to reclaim disk space.
+// The progress callback is called periodically with current status.
+func (s *Service) ForgetBucketObjects(ctx context.Context, bucketName string, currentMetadata *models.BucketMetadata, bucket models.Bucket, progress func(ForgetProgress)) (*models.BucketMetadata, error) {
+	slog.Info("Forgetting objects for bucket", slog.String("bucket", bucketName))
+
+	storedBucket, err := s.storage.GetBucket(ctx, s.sessionID, bucketName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bucket from storage: %w", err)
+	}
+	if storedBucket == nil {
+		return nil, fmt.Errorf("bucket not found in storage")
+	}
+
+	// Use already-known bucket stats instead of running a COUNT query
+	var totalCount int64
+	if currentMetadata != nil {
+		totalCount = currentMetadata.ObjectsCount + currentMetadata.DeleteMarkersCount
+	}
+
+	if progress != nil {
+		progress(ForgetProgress{
+			Phase:      fmt.Sprintf("Deleting %s objects...", humanize.Comma(totalCount)),
+			TotalCount: totalCount,
+		})
+	}
+
+	// Delete in batches of 50k rows
+	const batchSize = 50_000
+	var deletedCount int64
+	lastProgressUpdate := time.Now()
+
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		affected, err := s.storage.DeleteObjectsByBucketBatch(ctx, storedBucket.ID, batchSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to delete objects batch: %w", err)
+		}
+		if affected == 0 {
+			break
+		}
+
+		deletedCount += affected
+
+		if progress != nil && time.Since(lastProgressUpdate) >= time.Second {
+			progress(ForgetProgress{
+				Phase:        fmt.Sprintf("Deleting objects... %s / %s", humanize.Comma(deletedCount), humanize.Comma(totalCount)),
+				TotalCount:   totalCount,
+				DeletedCount: deletedCount,
+			})
+			lastProgressUpdate = time.Now()
+		}
+	}
+
+	slog.Info("Deleted objects from storage",
+		slog.String("bucket", bucketName),
+		slog.Int64("deleted", deletedCount),
+	)
+
+	// Reset objects metadata
+	metadata := currentMetadata
+	if metadata == nil {
+		metadata = &models.BucketMetadata{}
+	}
+	metadata.ObjectsRefreshedAt = nil
+	metadata.ObjectsCount = 0
+	metadata.ObjectsSize = 0
+	metadata.DeleteMarkersCount = 0
+
+	details := models.NewBucketDetails(bucket, metadata)
+	if err := s.storage.UpsertBucket(ctx, s.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
+		return nil, fmt.Errorf("failed to update metadata: %w", err)
+	}
+
+	slog.Info("Reset bucket objects metadata", slog.String("bucket", bucketName))
+
+	if progress != nil {
+		progress(ForgetProgress{
+			Phase:        "Vacuuming database...",
+			TotalCount:   totalCount,
+			DeletedCount: deletedCount,
+		})
+	}
+
+	// Vacuum to reclaim disk space
+	if err := s.storage.Vacuum(ctx); err != nil {
+		slog.Warn("Failed to vacuum database after forgetting objects", slog.String("bucket", bucketName), slogx.Error(err))
+		// Not fatal — objects are already deleted
+	} else {
+		slog.Info("Vacuumed database after forgetting objects", slog.String("bucket", bucketName))
+	}
+
+	return metadata, nil
+}
+
 // EnsureBucketInStorage ensures a bucket exists in storage, creating it if needed.
 // Returns an error only if the bucket cannot be found or stored.
 func (s *Service) EnsureBucketInStorage(ctx context.Context, bucket models.Bucket, metadata *models.BucketMetadata) error {

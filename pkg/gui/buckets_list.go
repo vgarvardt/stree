@@ -96,6 +96,12 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 	})
 	refreshItem.Icon = theme.ViewRefreshIcon()
 
+	// Create forget item to delete cached objects and reclaim disk space
+	forgetItem := fyne.NewMenuItem("Forget", func() {
+		go a.forgetBucketObjects(bucketName)
+	})
+	forgetItem.Icon = theme.DeleteIcon()
+
 	// Create and show the popup menu with separator
 	menu := fyne.NewMenu("",
 		listItem,
@@ -106,6 +112,7 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 		copySizeFormattedItem,
 		fyne.NewMenuItemSeparator(),
 		refreshItem,
+		forgetItem,
 	)
 	popUpMenu := widget.NewPopUpMenu(menu, a.window.Canvas())
 	popUpMenu.ShowAtPosition(position)

@@ -15,6 +15,149 @@ import (
 	"github.com/vgarvardt/stree/pkg/service"
 )
 
+// forgetBucketObjects deletes all cached objects for a bucket and reclaims disk space
+func (a *App) forgetBucketObjects(bucketName string) {
+	slog.Info("Forgetting objects for bucket", slog.String("bucket", bucketName))
+
+	// Close objects window if it's open
+	a.closeObjectsWindow()
+
+	// Create a cancellable context for this operation
+	ctx, cancel := context.WithCancel(a.svc.OpCtx())
+
+	progressChan := make(chan service.ForgetProgress, 1)
+	doneChan := make(chan forgetResult, 1)
+
+	currentMetadata := a.treeData.bucketMetadata[bucketName]
+	var bucket models.Bucket
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		bucket = *b
+	}
+
+	startedAt := time.Now()
+
+	go func() {
+		updatedMetadata, err := a.svc.ForgetBucketObjects(ctx, bucketName, currentMetadata, bucket, func(p service.ForgetProgress) {
+			progressChan <- p
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				doneChan <- forgetResult{cancelled: true}
+				return
+			}
+			doneChan <- forgetResult{err: err}
+			return
+		}
+
+		a.treeData.bucketMetadata[bucketName] = updatedMetadata
+		doneChan <- forgetResult{success: true, elapsed: time.Since(startedAt)}
+	}()
+
+	a.doUIAsync(func() {
+		a.showForgetProgressModal(bucketName, cancel, progressChan, doneChan)
+	})
+}
+
+// forgetResult represents the final result of the forget operation
+type forgetResult struct {
+	success   bool
+	cancelled bool
+	err       error
+	elapsed   time.Duration
+}
+
+// showForgetProgressModal displays a modal dialog with forget progress
+func (a *App) showForgetProgressModal(bucketName string, cancel context.CancelFunc, progressChan <-chan service.ForgetProgress, doneChan <-chan forgetResult) {
+	startTime := time.Now()
+
+	phaseLabel := widget.NewLabel("Initializing...")
+	elapsedLabel := widget.NewLabel("Elapsed: 0s")
+	statsLabel := widget.NewLabel("")
+
+	var latestProgress service.ForgetProgress
+
+	var dialog *widget.PopUp
+	cancelButton := widget.NewButton("Cancel", func() {
+		slog.Info("User cancelled forget operation", slog.String("bucket", bucketName))
+		cancel()
+	})
+
+	content := container.NewVBox(
+		widget.NewLabel(fmt.Sprintf("Forgetting objects for: %s", bucketName)),
+		widget.NewSeparator(),
+		phaseLabel,
+		elapsedLabel,
+		statsLabel,
+		widget.NewSeparator(),
+		cancelButton,
+	)
+
+	dialog = widget.NewModalPopUp(content, a.window.Canvas())
+	dialog.Show()
+
+	ticker := time.NewTicker(time.Second)
+
+	updateUI := func() {
+		a.doUIAsync(func() {
+			elapsed := time.Since(startTime)
+			elapsedLabel.SetText(fmt.Sprintf("Elapsed: %s", elapsed.Round(time.Second)))
+
+			if latestProgress.Phase != "" {
+				phaseLabel.SetText(latestProgress.Phase)
+			}
+
+			if latestProgress.TotalCount > 0 && latestProgress.DeletedCount > 0 {
+				pct := float64(latestProgress.DeletedCount) / float64(latestProgress.TotalCount) * 100
+				statsLabel.SetText(fmt.Sprintf("Deleted: %s / %s (%.1f%%)",
+					humanize.Comma(latestProgress.DeletedCount),
+					humanize.Comma(latestProgress.TotalCount),
+					pct,
+				))
+			} else {
+				statsLabel.SetText("")
+			}
+			dialog.Refresh()
+		})
+	}
+
+	go func() {
+		defer ticker.Stop()
+
+		for {
+			select {
+			case progress := <-progressChan:
+				latestProgress = progress
+				updateUI()
+
+			case <-ticker.C:
+				updateUI()
+
+			case result := <-doneChan:
+				a.doUIAsync(func() {
+					dialog.Hide()
+
+					if result.cancelled {
+						a.statusBar.SetText(fmt.Sprintf("Forget cancelled for %s", bucketName))
+						slog.Warn("Forget operation was cancelled", slog.String("bucket", bucketName))
+					} else if result.success {
+						a.tree.Refresh()
+						a.statusBar.SetText(fmt.Sprintf("Forgot objects for %s — database vacuumed in %s",
+							bucketName, result.elapsed.Round(time.Millisecond)))
+					} else {
+						errMsg := "unknown error"
+						if result.err != nil {
+							errMsg = result.err.Error()
+						}
+						a.statusBar.SetText(fmt.Sprintf("Error forgetting %s: %s", bucketName, errMsg))
+						slog.Error("Forget operation failed", slog.String("bucket", bucketName), slogx.Error(result.err))
+					}
+				})
+				return
+			}
+		}
+	}()
+}
+
 // refreshObjectsMetadata refreshes object versions data for a bucket
 func (a *App) refreshObjectsMetadata(bucketName string) {
 	startedAt := time.Now()

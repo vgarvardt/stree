@@ -431,6 +431,27 @@ func (s *Storage) DeleteObjectsByBucket(ctx context.Context, bucketID int64) err
 	return nil
 }
 
+// DeleteObjectsByBucketBatch deletes up to limit objects for a bucket and returns
+// the number of rows actually deleted.
+func (s *Storage) DeleteObjectsByBucketBatch(ctx context.Context, bucketID int64, limit int) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM objects WHERE id IN (SELECT id FROM objects WHERE bucket_id = ? LIMIT ?)`,
+		bucketID, limit)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete objects batch: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// Vacuum runs VACUUM on the database to reclaim disk space after large deletions.
+func (s *Storage) Vacuum(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `VACUUM`)
+	if err != nil {
+		return fmt.Errorf("failed to vacuum database: %w", err)
+	}
+	return nil
+}
+
 // OrderByField specifies which field to order objects by
 type OrderByField string
 
