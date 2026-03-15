@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"time"
 
+	"github.com/cappuccinotm/slogx"
 	"github.com/goccy/go-json"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
@@ -62,6 +64,7 @@ func buildDSN(dsn string) string {
 			"cache_size(-64000)",   // 64MB cache (default is ~2MB)
 			"mmap_size(268435456)", // 256MB memory-mapped I/O
 			"foreign_keys(on)",     // required for CASCADE deletes
+			"page_size(8192)",      // better for large DBs with long text keys (takes effect on VACUUM or new DB)
 		},
 	}
 
@@ -135,6 +138,9 @@ func (s *Storage) runMigrations() error {
 	if err != nil {
 		return fmt.Errorf("failed to create migrate instance: %w", err)
 	}
+
+	version, dirty, err := m.Version()
+	slog.Info("Applying DB migrations", slog.Uint64("current-version", uint64(version)), slog.Bool("dirty", dirty), slogx.Error(err))
 
 	// Run migrations
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
