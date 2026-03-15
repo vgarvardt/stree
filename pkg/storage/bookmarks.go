@@ -102,13 +102,13 @@ func (s *Storage) GetBookmark(ctx context.Context, id int64) (*models.Bookmark, 
 	return &bookmark, nil
 }
 
-// ListBookmarks retrieves all bookmarks ordered by last used date (most recent first)
+// ListBookmarks retrieves all bookmarks ordered by title ascending
 func (s *Storage) ListBookmarks(ctx context.Context) ([]models.Bookmark, error) {
-	query := `
-		SELECT id, title, endpoint, region, access_key_id, session_token, created_at, updated_at, last_used_at
-		FROM bookmarks
-		ORDER BY COALESCE(last_used_at, created_at) DESC
-	`
+	const query = `
+SELECT id, title, endpoint, region, access_key_id, session_token, created_at, updated_at, last_used_at
+FROM bookmarks
+ORDER BY title`
+
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list bookmarks: %w", err)
