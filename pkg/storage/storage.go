@@ -359,6 +359,38 @@ func (s *Storage) DeleteBucket(ctx context.Context, sessionID int64, name string
 	return nil
 }
 
+// DeleteStaleBuckets deletes buckets for a session whose names are NOT in the given set.
+// Associated objects, multipart uploads, and parts are removed via CASCADE.
+func (s *Storage) DeleteStaleBuckets(ctx context.Context, sessionID int64, freshNames []string) (int64, error) {
+	if len(freshNames) == 0 {
+		// No fresh buckets — delete all buckets for this session
+		result, err := s.db.ExecContext(ctx, `DELETE FROM buckets WHERE session_id = ?`, sessionID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to delete all buckets: %w", err)
+		}
+		return result.RowsAffected()
+	}
+
+	// Build placeholders for the IN clause
+	placeholders := make([]byte, 0, len(freshNames)*2)
+	args := make([]any, 0, len(freshNames)+1)
+	args = append(args, sessionID)
+	for i, name := range freshNames {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args = append(args, name)
+	}
+
+	query := fmt.Sprintf(`DELETE FROM buckets WHERE session_id = ? AND name NOT IN (%s)`, placeholders)
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete stale buckets: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // InsertObject inserts an object version into the cache
 func (s *Storage) InsertObject(ctx context.Context, bucketID int64, obj models.ObjectVersion) error {
 	_, err := s.db.ExecContext(ctx,

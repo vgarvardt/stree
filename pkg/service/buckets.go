@@ -210,6 +210,17 @@ func (s *Service) StoreBucketsWithEncryption(ctx context.Context, buckets []mode
 		}
 	}
 
+	// Delete buckets that no longer exist in S3 (cascades to objects, MPUs, parts)
+	freshNames := make([]string, len(buckets))
+	for i := range buckets {
+		freshNames[i] = buckets[i].Name
+	}
+	if deleted, err := s.storage.DeleteStaleBuckets(ctx, s.sessionID, freshNames); err != nil {
+		slog.Warn("Failed to delete stale buckets", slogx.Error(err))
+	} else if deleted > 0 {
+		slog.Info("Deleted stale buckets from storage", slog.Int64("count", deleted))
+	}
+
 	// Update session's buckets_refreshed_at timestamp
 	refreshedAt := time.Now()
 	if err := s.storage.UpdateSessionBucketsRefreshedAt(ctx, s.sessionID, refreshedAt); err != nil {
