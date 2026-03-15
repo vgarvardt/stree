@@ -102,6 +102,12 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 	})
 	forgetItem.Icon = theme.DeleteIcon()
 
+	// Create truncate item to permanently delete all objects from the bucket
+	truncateItem := fyne.NewMenuItem("Truncate", func() {
+		a.truncateBucketObjects(bucketName)
+	})
+	truncateItem.Icon = theme.WarningIcon()
+
 	// Create and show the popup menu with separator
 	menu := fyne.NewMenu("",
 		listItem,
@@ -113,6 +119,8 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 		fyne.NewMenuItemSeparator(),
 		refreshItem,
 		forgetItem,
+		fyne.NewMenuItemSeparator(),
+		truncateItem,
 	)
 	popUpMenu := widget.NewPopUpMenu(menu, a.window.Canvas())
 	popUpMenu.ShowAtPosition(position)

@@ -287,6 +287,70 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 	return versions, nextPagination, nil
 }
 
+// DeleteError represents a single object that failed to delete.
+type DeleteError struct {
+	Key       string
+	VersionID string
+	Code      string
+	Message   string
+}
+
+// DeleteResult holds the outcome of a DeleteObjects call.
+type DeleteResult struct {
+	Deleted int           // number of successfully deleted objects
+	Errors  []DeleteError // per-object errors (objects the backend refused to delete)
+}
+
+// DeleteObjects deletes up to 1000 objects in a single batch request.
+// Returns a DeleteResult and an error. The error is non-nil only for API-level failures
+// (network, auth, etc.). Per-object failures are reported in DeleteResult.Errors.
+func (c *Client) DeleteObjects(ctx context.Context, bucketName string, objects []models.ObjectVersion) (*DeleteResult, error) {
+	if len(objects) == 0 {
+		return &DeleteResult{}, nil
+	}
+
+	if len(objects) > 1000 {
+		return nil, fmt.Errorf("cannot delete more than 1000 objects at once, got %d", len(objects))
+	}
+
+	deleteObjects := make([]s3Types.ObjectIdentifier, 0, len(objects))
+	for _, obj := range objects {
+		id := s3Types.ObjectIdentifier{
+			Key: aws.String(obj.Key),
+		}
+		if obj.VersionID != "" {
+			id.VersionId = aws.String(obj.VersionID)
+		}
+		deleteObjects = append(deleteObjects, id)
+	}
+
+	output, err := c.s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		Bucket: aws.String(bucketName),
+		Delete: &s3Types.Delete{
+			Objects: deleteObjects,
+			Quiet:   aws.Bool(true),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete objects: %w", err)
+	}
+
+	result := &DeleteResult{
+		Deleted: len(objects) - len(output.Errors),
+	}
+
+	for _, e := range output.Errors {
+		result.Errors = append(result.Errors, DeleteError{
+			Key:       aws.ToString(e.Key),
+			VersionID: aws.ToString(e.VersionId),
+			Code:      aws.ToString(e.Code),
+			Message:   aws.ToString(e.Message),
+		})
+	}
+
+	return result, nil
+}
+
 // ListMultipartUploads lists all uncompleted multipart uploads in a bucket with pagination support
 // If pagination is nil, starts from the beginning. Returns uploads and pagination state.
 func (c *Client) ListMultipartUploads(ctx context.Context, bucketName string, pagination *models.Pagination) ([]models.MultipartUpload, *models.Pagination, error) {
