@@ -65,12 +65,115 @@ func (s *Service) RefreshObjectsMetadata(ctx context.Context, bucketName string,
 		progress(ObjectsProgress{Phase: "Fetching and storing object versions from S3..."})
 	}
 
+	checkpoint := s.makeCheckpointFn(bucketName, bucket, currentMetadata)
+
 	// Fetch and process object versions in batches
-	aggregates, err := s.fetchAndStoreObjectVersions(ctx, bucketName, storedBucket.ID, progress)
+	aggregates, err := s.fetchAndStoreObjectVersions(ctx, bucketName, storedBucket.ID, nil, nil, checkpoint, progress)
 	if err != nil {
 		return nil, err
 	}
 
+	return s.finalizeObjectsRefresh(ctx, bucketName, bucket, currentMetadata, aggregates)
+}
+
+// ResumeObjectsMetadata resumes an interrupted objects refresh from the last checkpoint.
+func (s *Service) ResumeObjectsMetadata(ctx context.Context, bucketName string, currentMetadata *models.BucketMetadata, bucket models.Bucket, progress func(ObjectsProgress)) (*ObjectsRefreshResult, error) {
+	if currentMetadata == nil || currentMetadata.ObjectsContinuation == nil {
+		return nil, fmt.Errorf("no continuation state available for resuming")
+	}
+
+	cont := currentMetadata.ObjectsContinuation
+	slog.Info("Resuming objects metadata refresh",
+		slog.String("bucket", bucketName),
+		slog.Int("fetched-so-far", cont.FetchedCount),
+		slog.String("key-marker", cont.NextKeyMarker))
+
+	storedBucket, err := s.storage.GetBucket(ctx, s.sessionID, bucketName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bucket from storage: %w", err)
+	}
+	if storedBucket == nil {
+		return nil, fmt.Errorf("bucket not found in storage")
+	}
+
+	if progress != nil {
+		progress(ObjectsProgress{
+			Phase:              fmt.Sprintf("Resuming from %s fetched objects...", humanize.Comma(int64(cont.FetchedCount))),
+			FetchedCount:       cont.FetchedCount,
+			TotalCount:         cont.TotalCount,
+			TotalSize:          cont.TotalSize,
+			LatestVersionCount: cont.LatestVersionCount,
+			LatestVersionSize:  cont.LatestVersionSize,
+			DeleteMarkerCount:  cont.DeleteMarkerCount,
+		})
+	}
+
+	startPagination := &models.Pagination{
+		IsTruncated:         true,
+		NextKeyMarker:       cont.NextKeyMarker,
+		NextVersionIDMarker: cont.NextVersionIDMarker,
+	}
+
+	startAggregates := &objectAggregates{
+		totalCount:         cont.TotalCount,
+		totalSize:          cont.TotalSize,
+		latestVersionCount: cont.LatestVersionCount,
+		latestVersionSize:  cont.LatestVersionSize,
+		deleteMarkerCount:  cont.DeleteMarkerCount,
+		fetchedCount:       cont.FetchedCount,
+	}
+
+	checkpoint := s.makeCheckpointFn(bucketName, bucket, currentMetadata)
+
+	aggregates, err := s.fetchAndStoreObjectVersions(ctx, bucketName, storedBucket.ID, startPagination, startAggregates, checkpoint, progress)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.finalizeObjectsRefresh(ctx, bucketName, bucket, currentMetadata, aggregates)
+}
+
+type objectAggregates struct {
+	totalCount         int64
+	totalSize          int64
+	latestVersionCount int64
+	latestVersionSize  int64
+	deleteMarkerCount  int64
+	fetchedCount       int
+}
+
+// makeCheckpointFn creates a function that persists the current continuation state
+// so the refresh can be resumed if interrupted.
+func (s *Service) makeCheckpointFn(bucketName string, bucket models.Bucket, baseMetadata *models.BucketMetadata) func(ctx context.Context, nextPagination *models.Pagination, agg *objectAggregates) {
+	return func(ctx context.Context, nextPagination *models.Pagination, agg *objectAggregates) {
+		metadata := &models.BucketMetadata{}
+		if baseMetadata != nil {
+			metadataCopy := *baseMetadata
+			metadata = &metadataCopy
+		}
+
+		metadata.ObjectsContinuation = &models.ObjectsContinuation{
+			NextKeyMarker:       nextPagination.NextKeyMarker,
+			NextVersionIDMarker: nextPagination.NextVersionIDMarker,
+			TotalCount:          agg.totalCount,
+			TotalSize:           agg.totalSize,
+			LatestVersionCount:  agg.latestVersionCount,
+			LatestVersionSize:   agg.latestVersionSize,
+			DeleteMarkerCount:   agg.deleteMarkerCount,
+			FetchedCount:        agg.fetchedCount,
+		}
+
+		details := models.NewBucketDetails(bucket, metadata)
+		if err := s.storage.UpsertBucket(ctx, s.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
+			slog.Warn("Failed to save continuation checkpoint",
+				slog.String("bucket", bucketName),
+				slogx.Error(err))
+		}
+	}
+}
+
+// finalizeObjectsRefresh updates metadata after a successful refresh or resume.
+func (s *Service) finalizeObjectsRefresh(ctx context.Context, bucketName string, bucket models.Bucket, currentMetadata *models.BucketMetadata, aggregates *objectAggregates) (*ObjectsRefreshResult, error) {
 	slog.Info("Calculated aggregates",
 		slog.String("bucket", bucketName),
 		slog.Int64("total-count", aggregates.totalCount),
@@ -85,7 +188,6 @@ func (s *Service) RefreshObjectsMetadata(ctx context.Context, bucketName string,
 		slog.String("delete-marker-count-fmt", humanize.Comma(aggregates.deleteMarkerCount)),
 	)
 
-	// Update metadata
 	metadata := currentMetadata
 	if metadata == nil {
 		metadata = &models.BucketMetadata{}
@@ -96,8 +198,8 @@ func (s *Service) RefreshObjectsMetadata(ctx context.Context, bucketName string,
 	metadata.ObjectsCount = aggregates.latestVersionCount
 	metadata.ObjectsSize = aggregates.latestVersionSize
 	metadata.DeleteMarkersCount = aggregates.deleteMarkerCount
+	metadata.ObjectsContinuation = nil // Clear continuation on success
 
-	// Store the updated metadata in storage
 	details := models.NewBucketDetails(bucket, metadata)
 	if err := s.storage.UpsertBucket(ctx, s.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {
 		return nil, fmt.Errorf("failed to update metadata: %w", err)
@@ -113,19 +215,21 @@ func (s *Service) RefreshObjectsMetadata(ctx context.Context, bucketName string,
 	}, nil
 }
 
-type objectAggregates struct {
-	totalCount         int64
-	totalSize          int64
-	latestVersionCount int64
-	latestVersionSize  int64
-	deleteMarkerCount  int64
-	fetchedCount       int
-}
-
-func (s *Service) fetchAndStoreObjectVersions(ctx context.Context, bucketName string, bucketID int64, progress func(ObjectsProgress)) (*objectAggregates, error) {
-	aggregates := &objectAggregates{}
+func (s *Service) fetchAndStoreObjectVersions(
+	ctx context.Context,
+	bucketName string,
+	bucketID int64,
+	startPagination *models.Pagination,
+	startAggregates *objectAggregates,
+	checkpoint func(ctx context.Context, nextPagination *models.Pagination, aggregates *objectAggregates),
+	progress func(ObjectsProgress),
+) (*objectAggregates, error) {
+	aggregates := startAggregates
+	if aggregates == nil {
+		aggregates = &objectAggregates{}
+	}
 	lastProgressUpdate := time.Now()
-	var pagination *models.Pagination
+	pagination := startPagination
 
 	for {
 		if ctx.Err() != nil {
@@ -160,6 +264,11 @@ func (s *Service) fetchAndStoreObjectVersions(ctx context.Context, bucketName st
 				slog.String("bucket", bucketName),
 				slog.Int("batch-size", len(versions)),
 				slog.Int("total-fetched", aggregates.fetchedCount))
+		}
+
+		// Save checkpoint for resumability when there are more pages
+		if checkpoint != nil && nextPagination.IsTruncated {
+			checkpoint(ctx, nextPagination, aggregates)
 		}
 
 		if progress != nil && time.Since(lastProgressUpdate) >= time.Second {
@@ -335,6 +444,7 @@ func (s *Service) ForgetBucketObjects(ctx context.Context, bucketName string, cu
 	metadata.ObjectsCount = 0
 	metadata.ObjectsSize = 0
 	metadata.DeleteMarkersCount = 0
+	metadata.ObjectsContinuation = nil
 
 	details := models.NewBucketDetails(bucket, metadata)
 	if err := s.storage.UpsertBucket(ctx, s.sessionID, bucketName, bucket.CreationDate, details, bucket.Encryption); err != nil {

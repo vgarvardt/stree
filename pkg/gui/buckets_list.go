@@ -96,6 +96,13 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 	})
 	refreshItem.Icon = theme.ViewRefreshIcon()
 
+	// Create resume item - active only when a previous refresh was interrupted
+	resumeItem := fyne.NewMenuItem("Resume refresh", func() {
+		go a.resumeObjectsMetadata(bucketName)
+	})
+	resumeItem.Icon = theme.MediaPlayIcon()
+	resumeItem.Disabled = metadata == nil || metadata.ObjectsContinuation == nil
+
 	// Create forget item to delete cached objects and reclaim disk space
 	forgetItem := fyne.NewMenuItem("Forget", func() {
 		go a.forgetBucketObjects(bucketName)
@@ -118,6 +125,7 @@ func (a *App) showObjectsContextMenu(bucketName string, metadata *models.BucketM
 		copySizeFormattedItem,
 		fyne.NewMenuItemSeparator(),
 		refreshItem,
+		resumeItem,
 		forgetItem,
 		fyne.NewMenuItemSeparator(),
 		truncateItem,

@@ -32,11 +32,26 @@ type BucketMetadata struct {
 	ObjectsSize        int64      `json:"objects_size"`
 	DeleteMarkersCount int64      `json:"delete_markers_count"`
 
+	// Continuation state for resumable objects refresh
+	ObjectsContinuation *ObjectsContinuation `json:"objects_continuation,omitempty"`
+
 	// Multipart uploads stats
 	MPUsRefreshedAt *time.Time `json:"mpus_refreshed_at,omitempty"`
 	MPUsCount       int64      `json:"mpus_count"`
 	MPUsTotalParts  int64      `json:"mpus_total_parts"`
 	MPUsTotalSize   int64      `json:"mpus_total_size"`
+}
+
+// ObjectsContinuation holds state for resuming an interrupted objects refresh.
+type ObjectsContinuation struct {
+	NextKeyMarker       string `json:"next_key_marker"`
+	NextVersionIDMarker string `json:"next_version_id_marker"`
+	TotalCount          int64  `json:"total_count"`
+	TotalSize           int64  `json:"total_size"`
+	LatestVersionCount  int64  `json:"latest_version_count"`
+	LatestVersionSize   int64  `json:"latest_version_size"`
+	DeleteMarkerCount   int64  `json:"delete_marker_count"`
+	FetchedCount        int    `json:"fetched_count"`
 }
 
 // BucketDetails represents bucket information stored in the database

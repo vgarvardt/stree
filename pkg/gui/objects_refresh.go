@@ -212,6 +212,54 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 	})
 }
 
+// resumeObjectsMetadata resumes an interrupted objects refresh from the last checkpoint
+func (a *App) resumeObjectsMetadata(bucketName string) {
+	startedAt := time.Now()
+
+	slog.Info("Resuming objects metadata refresh", slog.String("bucket", bucketName))
+
+	// Close objects window if it's open to prevent conflicts with stale data
+	a.closeObjectsWindow()
+
+	ctx, cancel := context.WithCancel(a.svc.OpCtx())
+
+	progressChan := make(chan service.ObjectsProgress, 1)
+	doneChan := make(chan objectsRefreshResult, 1)
+
+	currentMetadata := a.treeData.bucketMetadata[bucketName]
+	var bucket models.Bucket
+	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+		bucket = *b
+	}
+
+	go func() {
+		result, err := a.svc.ResumeObjectsMetadata(ctx, bucketName, currentMetadata, bucket, func(p service.ObjectsProgress) {
+			progressChan <- p
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				doneChan <- objectsRefreshResult{cancelled: true}
+				return
+			}
+			doneChan <- objectsRefreshResult{err: err}
+			return
+		}
+
+		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
+
+		doneChan <- objectsRefreshResult{
+			success:            true,
+			latestVersionCount: result.LatestVersionCount,
+			latestVersionSize:  result.LatestVersionSize,
+			elapsed:            time.Since(startedAt),
+		}
+	}()
+
+	a.doUIAsync(func() {
+		a.showRefreshProgressModal(bucketName, cancel, progressChan, doneChan)
+	})
+}
+
 // objectsRefreshResult represents the final result of the refresh operation
 type objectsRefreshResult struct {
 	success            bool
