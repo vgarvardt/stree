@@ -199,8 +199,7 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Check if this is a bucket node
-			if strings.HasPrefix(uid, uidPrefixBucket) {
-				bucketName := uid[len(uidPrefixBucket):]
+			if bucketName, ok := strings.CutPrefix(uid, uidPrefixBucket); ok {
 				metadata, exists := a.treeData.bucketMetadata[bucketName]
 				if !exists {
 					return []string{}
@@ -236,7 +235,7 @@ func (a *App) createTree() *widget.Tree {
 				return true
 			}
 			// Buckets are always branches (can be expanded)
-			if strings.HasPrefix(uid, uidPrefixBucket) {
+			if _, ok := strings.CutPrefix(uid, uidPrefixBucket); ok {
 				return true
 			}
 			// Metadata items are not branches
@@ -274,13 +273,11 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Handle bucket nodes (branches)
-			if strings.HasPrefix(uid, uidPrefixBucket) {
+			if bucketName, ok := strings.CutPrefix(uid, uidPrefixBucket); ok {
 				tappable := obj.(*TappableContainer)
 				c := tappable.container
 				icon := c.Objects[0].(*widget.Icon)
 				label := c.Objects[1].(*widget.Label)
-
-				bucketName := uid[len(uidPrefixBucket):]
 				var hasEncryption bool
 				if bucket := a.treeData.bucketIndex[bucketName]; bucket != nil {
 					label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
@@ -305,21 +302,14 @@ func (a *App) createTree() *widget.Tree {
 			}
 
 			// Handle metadata nodes (leaves) - these have icon + label
-			if strings.HasPrefix(uid, uidPrefixMeta) {
+			if rest, ok := strings.CutPrefix(uid, uidPrefixMeta); ok {
 				tappable := obj.(*TappableContainer)
 				c := tappable.container
 				icon := c.Objects[0].(*widget.Icon)
 				label := c.Objects[1].(*widget.Label)
 
-				parts := uid[len(uidPrefixMeta):] // Remove "meta:" prefix
-				// Parse: bucketName:fieldName
-				lastColon := -1
-				for i := len(parts) - 1; i >= 0; i-- {
-					if parts[i] == ':' {
-						lastColon = i
-						break
-					}
-				}
+				// Parse: bucketName:fieldName (split at last colon)
+				lastColon := strings.LastIndex(rest, ":")
 				if lastColon == -1 {
 					label.SetText("Unknown")
 					icon.SetResource(theme.QuestionIcon())
@@ -327,8 +317,8 @@ func (a *App) createTree() *widget.Tree {
 					return
 				}
 
-				bucketName := parts[:lastColon]
-				fieldName := parts[lastColon+1:]
+				bucketName := rest[:lastColon]
+				fieldName := rest[lastColon+1:]
 
 				metadata, exists := a.treeData.bucketMetadata[bucketName]
 				if !exists {
@@ -460,8 +450,7 @@ func (a *App) createTree() *widget.Tree {
 	// Handle node opening (expansion)
 	tree.OnBranchOpened = func(uid string) {
 		// Check if this is a bucket that hasn't been loaded yet
-		if strings.HasPrefix(uid, uidPrefixBucket) {
-			bucketName := uid[len(uidPrefixBucket):]
+		if bucketName, ok := strings.CutPrefix(uid, uidPrefixBucket); ok {
 			if _, exists := a.treeData.bucketMetadata[bucketName]; !exists {
 				go a.loadBucketMetadata(bucketName)
 			}

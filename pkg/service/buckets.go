@@ -1,10 +1,11 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -300,20 +301,20 @@ func (s *Service) RefreshSingleBucket(ctx context.Context, bucket models.Bucket)
 func SortBuckets(buckets []models.Bucket, mode SortMode) {
 	switch mode {
 	case SortNameAsc:
-		sort.Slice(buckets, func(i, j int) bool {
-			return buckets[i].Name < buckets[j].Name
+		slices.SortFunc(buckets, func(a, b models.Bucket) int {
+			return cmp.Compare(a.Name, b.Name)
 		})
 	case SortNameDesc:
-		sort.Slice(buckets, func(i, j int) bool {
-			return buckets[i].Name > buckets[j].Name
+		slices.SortFunc(buckets, func(a, b models.Bucket) int {
+			return cmp.Compare(b.Name, a.Name)
 		})
 	case SortDateAsc:
-		sort.Slice(buckets, func(i, j int) bool {
-			return buckets[i].CreationDate.Before(buckets[j].CreationDate)
+		slices.SortFunc(buckets, func(a, b models.Bucket) int {
+			return a.CreationDate.Compare(b.CreationDate)
 		})
 	case SortDateDesc:
-		sort.Slice(buckets, func(i, j int) bool {
-			return buckets[i].CreationDate.After(buckets[j].CreationDate)
+		slices.SortFunc(buckets, func(a, b models.Bucket) int {
+			return b.CreationDate.Compare(a.CreationDate)
 		})
 	}
 }

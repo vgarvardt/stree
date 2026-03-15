@@ -16,6 +16,7 @@ import (
 	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/ptr"
 	"github.com/cappuccinotm/slogx"
 
 	"github.com/vgarvardt/stree/pkg/models"
@@ -142,7 +143,7 @@ func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*mod
 
 	// Get versioning status
 	versioningOutput, err := c.s3Client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
-		Bucket: aws.String(bucketName),
+		Bucket: new(bucketName),
 	})
 	if err != nil {
 		slog.Warn("Could not get bucket versioning", slog.String("bucket", bucketName), slogx.Error(err))
@@ -153,7 +154,7 @@ func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*mod
 
 	// Get object lock configuration
 	lockOutput, err := c.s3Client.GetObjectLockConfiguration(ctx, &s3.GetObjectLockConfigurationInput{
-		Bucket: aws.String(bucketName),
+		Bucket: new(bucketName),
 	})
 	if err != nil {
 		slog.Debug("Failed to get object lock configuration", slog.String("bucket", bucketName), slogx.Error(err))
@@ -179,7 +180,7 @@ func (c *Client) GetBucketMetadata(ctx context.Context, bucketName string) (*mod
 // Returns nil if the bucket has no encryption configuration.
 func (c *Client) GetBucketEncryption(ctx context.Context, bucketName string) (*models.BucketEncryption, error) {
 	output, err := c.s3Client.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{
-		Bucket: aws.String(bucketName),
+		Bucket: new(bucketName),
 	})
 	if err != nil {
 		apiErr, ok := errors.AsType[smithy.APIError](err)
@@ -207,7 +208,7 @@ func (c *Client) ListBuckets(ctx context.Context, limit *int32) ([]models.Bucket
 	buckets := make([]models.Bucket, 0, len(output.Buckets))
 	for _, b := range output.Buckets {
 		bucket := models.Bucket{
-			Name: aws.ToString(b.Name),
+			Name: ptr.ToString(b.Name),
 		}
 		bucket.CreationDate = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC) // Default to Unix epoch start
 		if b.CreationDate != nil {
@@ -228,18 +229,18 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 	// Use pagination state if provided
 	if pagination != nil && pagination.IsTruncated {
 		if pagination.NextKeyMarker != "" {
-			keyMarker = aws.String(pagination.NextKeyMarker)
+			keyMarker = new(pagination.NextKeyMarker)
 		}
 		if pagination.NextVersionIDMarker != "" {
-			versionIDMarker = aws.String(pagination.NextVersionIDMarker)
+			versionIDMarker = new(pagination.NextVersionIDMarker)
 		}
 	}
 
 	input := &s3.ListObjectVersionsInput{
-		Bucket:          aws.String(bucketName),
+		Bucket:          new(bucketName),
 		KeyMarker:       keyMarker,
 		VersionIdMarker: versionIDMarker,
-		MaxKeys:         aws.Int32(1000),
+		MaxKeys:         new(int32(1000)),
 	}
 
 	output, err := c.s3Client.ListObjectVersions(ctx, input)
@@ -252,13 +253,13 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 	// Process object versions
 	for _, ver := range output.Versions {
 		version := models.ObjectVersion{
-			Key:            aws.ToString(ver.Key),
-			VersionID:      aws.ToString(ver.VersionId),
-			IsLatest:       aws.ToBool(ver.IsLatest),
-			Size:           aws.ToInt64(ver.Size),
-			LastModified:   aws.ToTime(ver.LastModified),
+			Key:            ptr.ToString(ver.Key),
+			VersionID:      ptr.ToString(ver.VersionId),
+			IsLatest:       ptr.ToBool(ver.IsLatest),
+			Size:           ptr.ToInt64(ver.Size),
+			LastModified:   ptr.ToTime(ver.LastModified),
 			IsDeleteMarker: false,
-			ETag:           aws.ToString(ver.ETag),
+			ETag:           ptr.ToString(ver.ETag),
 			StorageClass:   string(ver.StorageClass),
 		}
 		versions = append(versions, version)
@@ -267,11 +268,11 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 	// Process delete markers
 	for _, dm := range output.DeleteMarkers {
 		version := models.ObjectVersion{
-			Key:            aws.ToString(dm.Key),
-			VersionID:      aws.ToString(dm.VersionId),
-			IsLatest:       aws.ToBool(dm.IsLatest),
+			Key:            ptr.ToString(dm.Key),
+			VersionID:      ptr.ToString(dm.VersionId),
+			IsLatest:       ptr.ToBool(dm.IsLatest),
 			Size:           0,
-			LastModified:   aws.ToTime(dm.LastModified),
+			LastModified:   ptr.ToTime(dm.LastModified),
 			IsDeleteMarker: true,
 		}
 		versions = append(versions, version)
@@ -279,9 +280,9 @@ func (c *Client) ListObjectVersions(ctx context.Context, bucketName string, pagi
 
 	// Build pagination response
 	nextPagination := &models.Pagination{
-		IsTruncated:         aws.ToBool(output.IsTruncated),
-		NextKeyMarker:       aws.ToString(output.NextKeyMarker),
-		NextVersionIDMarker: aws.ToString(output.NextVersionIdMarker),
+		IsTruncated:         ptr.ToBool(output.IsTruncated),
+		NextKeyMarker:       ptr.ToString(output.NextKeyMarker),
+		NextVersionIDMarker: ptr.ToString(output.NextVersionIdMarker),
 	}
 
 	return versions, nextPagination, nil
@@ -316,19 +317,19 @@ func (c *Client) DeleteObjects(ctx context.Context, bucketName string, objects [
 	deleteObjects := make([]s3Types.ObjectIdentifier, 0, len(objects))
 	for _, obj := range objects {
 		id := s3Types.ObjectIdentifier{
-			Key: aws.String(obj.Key),
+			Key: new(obj.Key),
 		}
 		if obj.VersionID != "" {
-			id.VersionId = aws.String(obj.VersionID)
+			id.VersionId = new(obj.VersionID)
 		}
 		deleteObjects = append(deleteObjects, id)
 	}
 
 	output, err := c.s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-		Bucket: aws.String(bucketName),
+		Bucket: new(bucketName),
 		Delete: &s3Types.Delete{
 			Objects: deleteObjects,
-			Quiet:   aws.Bool(true),
+			Quiet:   new(true),
 		},
 	})
 	if err != nil {
@@ -341,10 +342,10 @@ func (c *Client) DeleteObjects(ctx context.Context, bucketName string, objects [
 
 	for _, e := range output.Errors {
 		result.Errors = append(result.Errors, DeleteError{
-			Key:       aws.ToString(e.Key),
-			VersionID: aws.ToString(e.VersionId),
-			Code:      aws.ToString(e.Code),
-			Message:   aws.ToString(e.Message),
+			Key:       ptr.ToString(e.Key),
+			VersionID: ptr.ToString(e.VersionId),
+			Code:      ptr.ToString(e.Code),
+			Message:   ptr.ToString(e.Message),
 		})
 	}
 
@@ -360,18 +361,18 @@ func (c *Client) ListMultipartUploads(ctx context.Context, bucketName string, pa
 	// Use pagination state if provided
 	if pagination != nil && pagination.IsTruncated {
 		if pagination.NextKeyMarker != "" {
-			keyMarker = aws.String(pagination.NextKeyMarker)
+			keyMarker = new(pagination.NextKeyMarker)
 		}
 		if pagination.NextUploadIDMarker != "" {
-			uploadIDMarker = aws.String(pagination.NextUploadIDMarker)
+			uploadIDMarker = new(pagination.NextUploadIDMarker)
 		}
 	}
 
 	input := &s3.ListMultipartUploadsInput{
-		Bucket:         aws.String(bucketName),
+		Bucket:         new(bucketName),
 		KeyMarker:      keyMarker,
 		UploadIdMarker: uploadIDMarker,
-		MaxUploads:     aws.Int32(1000),
+		MaxUploads:     new(int32(1000)),
 	}
 
 	output, err := c.s3Client.ListMultipartUploads(ctx, input)
@@ -382,25 +383,25 @@ func (c *Client) ListMultipartUploads(ctx context.Context, bucketName string, pa
 	uploads := make([]models.MultipartUpload, 0, len(output.Uploads))
 	for _, u := range output.Uploads {
 		upload := models.MultipartUpload{
-			Key:          aws.ToString(u.Key),
-			UploadID:     aws.ToString(u.UploadId),
+			Key:          ptr.ToString(u.Key),
+			UploadID:     ptr.ToString(u.UploadId),
 			StorageClass: string(u.StorageClass),
-			Initiated:    aws.ToTime(u.Initiated),
+			Initiated:    ptr.ToTime(u.Initiated),
 		}
 		if u.Initiator != nil {
-			upload.Initiator = aws.ToString(u.Initiator.DisplayName)
+			upload.Initiator = ptr.ToString(u.Initiator.DisplayName)
 		}
 		if u.Owner != nil {
-			upload.Owner = aws.ToString(u.Owner.DisplayName)
+			upload.Owner = ptr.ToString(u.Owner.DisplayName)
 		}
 		uploads = append(uploads, upload)
 	}
 
 	// Build pagination response
 	nextPagination := &models.Pagination{
-		IsTruncated:        aws.ToBool(output.IsTruncated),
-		NextKeyMarker:      aws.ToString(output.NextKeyMarker),
-		NextUploadIDMarker: aws.ToString(output.NextUploadIdMarker),
+		IsTruncated:        ptr.ToBool(output.IsTruncated),
+		NextKeyMarker:      ptr.ToString(output.NextKeyMarker),
+		NextUploadIDMarker: ptr.ToString(output.NextUploadIdMarker),
 	}
 
 	return uploads, nextPagination, nil
@@ -413,11 +414,11 @@ func (c *Client) ListParts(ctx context.Context, bucketName, key, uploadID string
 
 	for {
 		input := &s3.ListPartsInput{
-			Bucket:           aws.String(bucketName),
-			Key:              aws.String(key),
-			UploadId:         aws.String(uploadID),
+			Bucket:           new(bucketName),
+			Key:              new(key),
+			UploadId:         new(uploadID),
 			PartNumberMarker: partNumberMarker,
-			MaxParts:         aws.Int32(1000),
+			MaxParts:         new(int32(1000)),
 		}
 
 		output, err := c.s3Client.ListParts(ctx, input)
@@ -428,15 +429,15 @@ func (c *Client) ListParts(ctx context.Context, bucketName, key, uploadID string
 		for _, p := range output.Parts {
 			part := models.MultipartUploadPart{
 				UploadID:     uploadID,
-				PartNumber:   aws.ToInt32(p.PartNumber),
-				Size:         aws.ToInt64(p.Size),
-				ETag:         aws.ToString(p.ETag),
-				LastModified: aws.ToTime(p.LastModified),
+				PartNumber:   ptr.ToInt32(p.PartNumber),
+				Size:         ptr.ToInt64(p.Size),
+				ETag:         ptr.ToString(p.ETag),
+				LastModified: ptr.ToTime(p.LastModified),
 			}
 			parts = append(parts, part)
 		}
 
-		if !aws.ToBool(output.IsTruncated) {
+		if !ptr.ToBool(output.IsTruncated) {
 			break
 		}
 		partNumberMarker = output.NextPartNumberMarker

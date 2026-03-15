@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 STree is a desktop S3-compatible browser built with Go, using Fyne for the GUI and AWS SDK v2 for S3 operations. It supports bookmarked connections to any S3-compatible endpoint, caches bucket/object data in SQLite, and stores secret keys securely in the OS keychain.
 
+## Go Version
+
+The project uses **Go 1.26** and leverages modern language features (range-over-int, range-over-func iterators, etc.). Use current Go idioms — do not write backwards-compatible code for older Go versions.
+
 ## Build & Test Commands
 
 ```bash
