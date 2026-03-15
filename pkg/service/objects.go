@@ -8,7 +8,6 @@ import (
 
 	"github.com/cappuccinotm/slogx"
 	"github.com/dustin/go-humanize"
-	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
 	"github.com/vgarvardt/stree/pkg/storage"
@@ -249,19 +248,9 @@ func (s *Service) ListObjects(ctx context.Context, bucketName string, sortMode O
 		opts.FilterDeleteMarker = &f
 	}
 
-	storageObjects, err := s.storage.ListObjectsByBucket(ctx, storedBucket.ID, opts)
+	objects, err := s.storage.ListObjectsByBucket(ctx, storedBucket.ID, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list objects: %w", err)
-	}
-
-	objects := make([]models.ObjectVersion, 0, len(storageObjects))
-	for _, obj := range storageObjects {
-		var version models.ObjectVersion
-		if err := json.Unmarshal(obj.Properties, &version); err != nil {
-			slog.Warn("Failed to unmarshal object version", slogx.Error(err))
-			continue
-		}
-		objects = append(objects, version)
 	}
 
 	slog.Info("Loaded objects", slog.String("bucket", bucketName), slog.Int("count", len(objects)))

@@ -51,15 +51,6 @@ type Bucket struct {
 	UpdatedAt    time.Time
 }
 
-// Object represents a cached S3 object
-type Object struct {
-	ID         int64
-	BucketID   int64
-	Properties json.RawMessage // JSON field for object properties
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-}
-
 // buildDSN constructs a SQLite DSN with per-connection PRAGMAs.
 // The modernc driver applies _pragma parameters on every new connection,
 // ensuring all connections in the pool are consistently configured.
@@ -368,37 +359,24 @@ func (s *Storage) DeleteBucket(ctx context.Context, sessionID int64, name string
 	return nil
 }
 
-// UpsertObject creates or updates an object
-func (s *Storage) UpsertObject(ctx context.Context, bucketID int64, properties any) (int64, error) {
-	propertiesJSON, err := json.Marshal(properties)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal object properties: %w", err)
-	}
-
-	now := time.Now()
-
-	// For now, just insert a new object
-	// TODO: In the future, we might want to update based on object key
-	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO objects (bucket_id, properties, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		bucketID, propertiesJSON, now, now,
+// InsertObject inserts an object version into the cache
+func (s *Storage) InsertObject(ctx context.Context, bucketID int64, obj models.ObjectVersion) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO objects (bucket_id, key, version_id, is_latest, size, last_modified, is_delete_marker, etag, storage_class)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		bucketID, obj.Key, obj.VersionID, obj.IsLatest, obj.Size, obj.LastModified, obj.IsDeleteMarker, obj.ETag, obj.StorageClass,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("failed to insert object: %w", err)
+		return fmt.Errorf("failed to insert object: %w", err)
 	}
-
-	objectID, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get last insert ID: %w", err)
-	}
-
-	return objectID, nil
+	return nil
 }
 
 // GetObjectsByBucket retrieves all objects for a bucket
-func (s *Storage) GetObjectsByBucket(ctx context.Context, bucketID int64) ([]Object, error) {
+func (s *Storage) GetObjectsByBucket(ctx context.Context, bucketID int64) ([]models.ObjectVersion, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, bucket_id, properties, created_at, updated_at FROM objects WHERE bucket_id = ? ORDER BY created_at DESC`,
+		`SELECT key, version_id, is_latest, size, last_modified, is_delete_marker, etag, storage_class
+		 FROM objects WHERE bucket_id = ? ORDER BY key`,
 		bucketID,
 	)
 	if err != nil {
@@ -406,10 +384,10 @@ func (s *Storage) GetObjectsByBucket(ctx context.Context, bucketID int64) ([]Obj
 	}
 	defer rows.Close()
 
-	var objects []Object
+	var objects []models.ObjectVersion
 	for rows.Next() {
-		var obj Object
-		if err := rows.Scan(&obj.ID, &obj.BucketID, &obj.Properties, &obj.CreatedAt, &obj.UpdatedAt); err != nil {
+		var obj models.ObjectVersion
+		if err := rows.Scan(&obj.Key, &obj.VersionID, &obj.IsLatest, &obj.Size, &obj.LastModified, &obj.IsDeleteMarker, &obj.ETag, &obj.StorageClass); err != nil {
 			return nil, fmt.Errorf("failed to scan object: %w", err)
 		}
 		objects = append(objects, obj)
@@ -435,7 +413,9 @@ func (s *Storage) DeleteObjectsByBucket(ctx context.Context, bucketID int64) err
 // the number of rows actually deleted.
 func (s *Storage) DeleteObjectsByBucketBatch(ctx context.Context, bucketID int64, limit int) (int64, error) {
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM objects WHERE id IN (SELECT id FROM objects WHERE bucket_id = ? LIMIT ?)`,
+		`DELETE FROM objects WHERE (bucket_id, key, version_id, is_delete_marker) IN (
+			SELECT bucket_id, key, version_id, is_delete_marker FROM objects WHERE bucket_id = ? LIMIT ?
+		)`,
 		bucketID, limit)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete objects batch: %w", err)
@@ -456,7 +436,7 @@ func (s *Storage) Vacuum(ctx context.Context) error {
 type OrderByField string
 
 const (
-	OrderByID           OrderByField = ""
+	OrderByKey          OrderByField = ""
 	OrderBySize         OrderByField = "size"
 	OrderByLastModified OrderByField = "last_modified"
 )
@@ -470,16 +450,16 @@ type ObjectListOptions struct {
 }
 
 // ListObjectsByBucket retrieves objects for a bucket with filtering, ordering, and pagination
-func (s *Storage) ListObjectsByBucket(ctx context.Context, bucketID int64, opts ObjectListOptions) ([]Object, error) {
-	query := `SELECT id, bucket_id, properties, created_at, updated_at FROM objects WHERE bucket_id = ?`
+func (s *Storage) ListObjectsByBucket(ctx context.Context, bucketID int64, opts ObjectListOptions) ([]models.ObjectVersion, error) {
+	query := `SELECT key, version_id, is_latest, size, last_modified, is_delete_marker, etag, storage_class FROM objects WHERE bucket_id = ?`
 	args := []any{bucketID}
 
 	// Add filter for delete markers if specified
 	if opts.FilterDeleteMarker != nil {
 		if *opts.FilterDeleteMarker {
-			query += ` AND json_extract(properties, '$.is_delete_marker') = 1`
+			query += ` AND is_delete_marker = 1`
 		} else {
-			query += ` AND json_extract(properties, '$.is_delete_marker') = 0`
+			query += ` AND is_delete_marker = 0`
 		}
 	}
 
@@ -491,13 +471,13 @@ func (s *Storage) ListObjectsByBucket(ctx context.Context, bucketID int64, opts 
 
 	switch opts.OrderBy {
 	case OrderBySize:
-		query += ` ORDER BY json_extract(properties, '$.size') ` + orderDir
+		query += ` ORDER BY size ` + orderDir
 	case OrderByLastModified:
-		query += ` ORDER BY json_extract(properties, '$.last_modified') ` + orderDir
-	case OrderByID:
+		query += ` ORDER BY last_modified ` + orderDir
+	case OrderByKey:
 		fallthrough
 	default:
-		query += ` ORDER BY id ` + orderDir
+		query += ` ORDER BY key ` + orderDir + `, version_id ` + orderDir
 	}
 
 	// Add limit
@@ -512,10 +492,10 @@ func (s *Storage) ListObjectsByBucket(ctx context.Context, bucketID int64, opts 
 	}
 	defer rows.Close()
 
-	var objects []Object
+	var objects []models.ObjectVersion
 	for rows.Next() {
-		var obj Object
-		if err := rows.Scan(&obj.ID, &obj.BucketID, &obj.Properties, &obj.CreatedAt, &obj.UpdatedAt); err != nil {
+		var obj models.ObjectVersion
+		if err := rows.Scan(&obj.Key, &obj.VersionID, &obj.IsLatest, &obj.Size, &obj.LastModified, &obj.IsDeleteMarker, &obj.ETag, &obj.StorageClass); err != nil {
 			return nil, fmt.Errorf("failed to scan object: %w", err)
 		}
 		objects = append(objects, obj)
@@ -536,21 +516,16 @@ func (s *Storage) BulkInsertObjectVersions(ctx context.Context, bucketID int64, 
 
 	return transactional(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO objects (bucket_id, properties, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+			`INSERT OR REPLACE INTO objects (bucket_id, key, version_id, is_latest, size, last_modified, is_delete_marker, etag, storage_class)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to prepare statement: %w", err)
 		}
 		defer stmt.Close()
 
-		now := time.Now()
 		for _, version := range versions {
-			propertiesJSON, err := json.Marshal(version)
-			if err != nil {
-				return fmt.Errorf("failed to marshal object version: %w", err)
-			}
-
-			_, err = stmt.ExecContext(ctx, bucketID, propertiesJSON, now, now)
+			_, err = stmt.ExecContext(ctx, bucketID, version.Key, version.VersionID, version.IsLatest, version.Size, version.LastModified, version.IsDeleteMarker, version.ETag, version.StorageClass)
 			if err != nil {
 				return fmt.Errorf("failed to insert object version: %w", err)
 			}

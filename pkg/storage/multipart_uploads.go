@@ -4,31 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
-
-	"github.com/goccy/go-json"
 
 	"github.com/vgarvardt/stree/pkg/models"
 )
-
-// MultipartUpload represents a cached multipart upload
-type MultipartUpload struct {
-	ID         int64
-	BucketID   int64
-	Properties json.RawMessage // JSON field for upload properties
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-}
-
-// MultipartUploadPart represents a cached multipart upload part
-type MultipartUploadPart struct {
-	ID         int64
-	BucketID   int64
-	UploadID   string
-	Properties json.RawMessage // JSON field for part properties
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-}
 
 // DeleteMultipartUploadsByBucket deletes all multipart uploads and their parts for a specific bucket
 func (s *Storage) DeleteMultipartUploadsByBucket(ctx context.Context, bucketID int64) error {
@@ -55,21 +33,16 @@ func (s *Storage) BulkInsertMultipartUploads(ctx context.Context, bucketID int64
 
 	return transactional(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO multipart_uploads (bucket_id, properties, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO multipart_uploads (bucket_id, key, upload_id, initiator, owner, storage_class, initiated)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to prepare statement: %w", err)
 		}
 		defer stmt.Close()
 
-		now := time.Now()
 		for _, upload := range uploads {
-			propertiesJSON, err := json.Marshal(upload)
-			if err != nil {
-				return fmt.Errorf("failed to marshal multipart upload: %w", err)
-			}
-
-			_, err = stmt.ExecContext(ctx, bucketID, propertiesJSON, now, now)
+			_, err = stmt.ExecContext(ctx, bucketID, upload.Key, upload.UploadID, upload.Initiator, upload.Owner, upload.StorageClass, upload.Initiated)
 			if err != nil {
 				return fmt.Errorf("failed to insert multipart upload: %w", err)
 			}
@@ -87,21 +60,16 @@ func (s *Storage) BulkInsertMultipartUploadParts(ctx context.Context, bucketID i
 
 	return transactional(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO multipart_upload_parts (bucket_id, upload_id, properties, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			`INSERT INTO multipart_upload_parts (bucket_id, upload_id, part_number, size, etag, last_modified)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to prepare statement: %w", err)
 		}
 		defer stmt.Close()
 
-		now := time.Now()
 		for _, part := range parts {
-			propertiesJSON, err := json.Marshal(part)
-			if err != nil {
-				return fmt.Errorf("failed to marshal multipart upload part: %w", err)
-			}
-
-			_, err = stmt.ExecContext(ctx, bucketID, uploadID, propertiesJSON, now, now)
+			_, err = stmt.ExecContext(ctx, bucketID, uploadID, part.PartNumber, part.Size, part.ETag, part.LastModified)
 			if err != nil {
 				return fmt.Errorf("failed to insert multipart upload part: %w", err)
 			}
@@ -125,15 +93,15 @@ func (s *Storage) ListMultipartUploadsByBucket(ctx context.Context, bucketID int
 	}
 
 	query := `
-		SELECT 
-			m.properties,
-			COALESCE(COUNT(p.id), 0) as parts_count,
-			COALESCE(SUM(json_extract(p.properties, '$.size')), 0) as total_size
+		SELECT
+			m.key, m.upload_id, m.initiator, m.owner, m.storage_class, m.initiated,
+			COALESCE(COUNT(p.part_number), 0) as parts_count,
+			COALESCE(SUM(p.size), 0) as total_size
 		FROM multipart_uploads m
-		LEFT JOIN multipart_upload_parts p ON json_extract(m.properties, '$.upload_id') = p.upload_id AND m.bucket_id = p.bucket_id
+		LEFT JOIN multipart_upload_parts p ON m.upload_id = p.upload_id AND m.bucket_id = p.bucket_id
 		WHERE m.bucket_id = ?
-		GROUP BY m.id
-		ORDER BY json_extract(m.properties, '$.initiated') ` + orderDir
+		GROUP BY m.bucket_id, m.upload_id
+		ORDER BY m.initiated ` + orderDir
 
 	args := []any{bucketID}
 
@@ -150,24 +118,17 @@ func (s *Storage) ListMultipartUploadsByBucket(ctx context.Context, bucketID int
 
 	var uploads []models.MultipartUploadWithParts
 	for rows.Next() {
-		var props json.RawMessage
-		var partsCount int32
-		var totalSize int64
+		var upload models.MultipartUploadWithParts
 
-		if err := rows.Scan(&props, &partsCount, &totalSize); err != nil {
+		if err := rows.Scan(
+			&upload.Key, &upload.UploadID, &upload.Initiator, &upload.Owner,
+			&upload.StorageClass, &upload.Initiated,
+			&upload.PartsCount, &upload.TotalSize,
+		); err != nil {
 			return nil, fmt.Errorf("failed to scan multipart upload: %w", err)
 		}
 
-		var upload models.MultipartUpload
-		if err := json.Unmarshal(props, &upload); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal multipart upload: %w", err)
-		}
-
-		uploads = append(uploads, models.MultipartUploadWithParts{
-			MultipartUpload: upload,
-			PartsCount:      partsCount,
-			TotalSize:       totalSize,
-		})
+		uploads = append(uploads, upload)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -192,7 +153,7 @@ func (s *Storage) GetMultipartUploadStats(ctx context.Context, bucketID int64) (
 
 	// Get parts count and total size
 	err = s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(COUNT(*), 0), COALESCE(SUM(json_extract(properties, '$.size')), 0) 
+		`SELECT COALESCE(COUNT(*), 0), COALESCE(SUM(size), 0)
 		 FROM multipart_upload_parts WHERE bucket_id = ?`,
 		bucketID,
 	).Scan(&stats.TotalPartsCount, &stats.TotalPartsSize)
