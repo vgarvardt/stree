@@ -21,6 +21,19 @@ import (
 func (a *App) refreshBuckets() {
 	slog.Info("Refreshing S3 buckets")
 
+	// Show progress modal early so the user knows a refresh is in progress
+	var modal *widget.PopUp
+	a.doUI(func() {
+		content := container.NewVBox(
+			widget.NewLabel("Refreshing buckets..."),
+			widget.NewSeparator(),
+			widget.NewProgressBarInfinite(),
+			widget.NewLabel("Invalidating cache..."),
+		)
+		modal = widget.NewModalPopUp(content, a.window.Canvas())
+		modal.Show()
+	})
+
 	// Close objects window if it's open to prevent conflicts
 	a.closeObjectsWindow()
 
@@ -39,6 +52,11 @@ func (a *App) refreshBuckets() {
 	if _, err := a.svc.InvalidateSession(a.svc.OpCtx()); err != nil {
 		slog.Warn("Failed to invalidate storage cache", slogx.Error(err))
 	}
+
+	// Hide the early progress modal before loadBuckets shows its own
+	a.doUI(func() {
+		modal.Hide()
+	})
 
 	// Reload buckets
 	a.loadBuckets()

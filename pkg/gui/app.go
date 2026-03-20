@@ -158,6 +158,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	// Create status bar
 	a.statusBar = widget.NewLabel("Not connected. Select a bookmark to connect.")
+	a.statusBar.Truncation = fyne.TextTruncateEllipsis
 	statusContainer := container.NewBorder(nil, nil, widget.NewIcon(theme.InfoIcon()), nil, a.statusBar)
 
 	// Create tree widget
