@@ -210,11 +210,30 @@ func (s *Service) StoreBucketsWithEncryption(ctx context.Context, buckets []mode
 		}
 	}
 
-	// Delete buckets that no longer exist in S3 (cascades to objects, MPUs, parts)
+	// Delete buckets that no longer exist in S3
 	freshNames := make([]string, len(buckets))
 	for i := range buckets {
 		freshNames[i] = buckets[i].Name
 	}
+
+	// Delete per-bucket cache files for stale buckets before removing them from main DB
+	freshNameSet := make(map[string]struct{}, len(freshNames))
+	for _, name := range freshNames {
+		freshNameSet[name] = struct{}{}
+	}
+	storedBuckets, err := s.storage.GetBucketsBySession(ctx, s.sessionID)
+	if err != nil {
+		slog.Warn("Failed to get stored buckets for stale cleanup", slogx.Error(err))
+	} else {
+		for _, b := range storedBuckets {
+			if _, ok := freshNameSet[b.Name]; !ok {
+				if err := s.sessions.DeleteBucket(s.sessionID, b.ID); err != nil {
+					slog.Warn("Failed to delete stale bucket cache", slogx.Error(err), slog.String("bucket", b.Name))
+				}
+			}
+		}
+	}
+
 	if deleted, err := s.storage.DeleteStaleBuckets(ctx, s.sessionID, freshNames); err != nil {
 		slog.Warn("Failed to delete stale buckets", slogx.Error(err))
 	} else if deleted > 0 {
@@ -237,6 +256,11 @@ func (s *Service) StoreBucketsWithEncryption(ctx context.Context, buckets []mode
 // InvalidateSession deletes the current session data and creates a new session.
 // Returns the new session ID.
 func (s *Service) InvalidateSession(ctx context.Context) (int64, error) {
+	// Delete all per-bucket cache files for this session (instant directory removal)
+	if err := s.sessions.DeleteSession(s.sessionID); err != nil {
+		slog.Warn("Failed to delete session cache directory", slogx.Error(err))
+	}
+
 	newSessionID, err := s.storage.InvalidateSession(ctx, s.sessionID)
 	if err != nil {
 		return s.sessionID, fmt.Errorf("failed to invalidate session: %w", err)
@@ -286,6 +310,14 @@ func (s *Service) LoadBucketMetadata(ctx context.Context, bucket models.Bucket) 
 // RefreshSingleBucket invalidates and reloads metadata for a specific bucket.
 func (s *Service) RefreshSingleBucket(ctx context.Context, bucket models.Bucket) (*models.BucketMetadata, error) {
 	slog.Info("Refreshing bucket", slog.String("bucket", bucket.Name))
+
+	// Delete per-bucket cache file before deleting from main DB
+	storedBucket, err := s.storage.GetBucket(ctx, s.sessionID, bucket.Name)
+	if err == nil && storedBucket != nil {
+		if err := s.sessions.DeleteBucket(s.sessionID, storedBucket.ID); err != nil {
+			slog.Warn("Failed to delete bucket cache", slogx.Error(err), slog.String("bucket", bucket.Name))
+		}
+	}
 
 	// Delete bucket from storage to force refresh
 	if err := s.storage.DeleteBucket(ctx, s.sessionID, bucket.Name); err != nil {

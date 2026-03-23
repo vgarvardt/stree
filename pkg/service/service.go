@@ -16,6 +16,7 @@ import (
 // It is independent of any UI framework.
 type Service struct {
 	storage   *storage.Storage
+	sessions  *storage.SessionManager
 	credStore *storage.CredentialStore
 	verbose   bool
 	version   string
@@ -30,9 +31,10 @@ type Service struct {
 }
 
 // New creates a new Service instance.
-func New(stor *storage.Storage, credStore *storage.CredentialStore, verbose bool, version string) *Service {
+func New(stor *storage.Storage, sessions *storage.SessionManager, credStore *storage.CredentialStore, verbose bool, version string) *Service {
 	return &Service{
 		storage:   stor,
+		sessions:  sessions,
 		credStore: credStore,
 		verbose:   verbose,
 		version:   version,

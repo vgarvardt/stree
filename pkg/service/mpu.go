@@ -46,8 +46,13 @@ func (s *Service) RefreshMPUsMetadata(ctx context.Context, bucketName string, cu
 		progress(MPUProgress{Phase: "Deleting existing multipart uploads data..."})
 	}
 
-	// Delete all existing MPUs for this bucket
-	if err := s.storage.DeleteMultipartUploadsByBucket(ctx, storedBucket.ID); err != nil {
+	// Open bucket DB (will create if needed) and delete existing MPUs
+	bucketDB, err := s.sessions.Open(s.sessionID, storedBucket.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open bucket database: %w", err)
+	}
+
+	if err := bucketDB.DeleteMultipartUploads(ctx); err != nil {
 		return nil, fmt.Errorf("failed to delete existing MPUs: %w", err)
 	}
 
@@ -62,7 +67,7 @@ func (s *Service) RefreshMPUsMetadata(ctx context.Context, bucketName string, cu
 	}
 
 	// Fetch and process multipart uploads
-	stats, err := s.fetchAndStoreMPUs(ctx, bucketName, storedBucket.ID, progress)
+	stats, err := s.fetchAndStoreMPUs(ctx, bucketName, bucketDB, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +113,7 @@ type mpuStats struct {
 	totalSize    int64
 }
 
-func (s *Service) fetchAndStoreMPUs(ctx context.Context, bucketName string, bucketID int64, progress func(MPUProgress)) (*mpuStats, error) {
+func (s *Service) fetchAndStoreMPUs(ctx context.Context, bucketName string, bucketDB *storage.BucketDB, progress func(MPUProgress)) (*mpuStats, error) {
 	stats := &mpuStats{}
 	lastProgressUpdate := time.Now()
 	var pagination *models.Pagination
@@ -124,7 +129,7 @@ func (s *Service) fetchAndStoreMPUs(ctx context.Context, bucketName string, buck
 		}
 
 		if len(uploads) > 0 {
-			if err := s.storage.BulkInsertMultipartUploads(ctx, bucketID, uploads); err != nil {
+			if err := bucketDB.BulkInsertMultipartUploads(ctx, uploads); err != nil {
 				return nil, fmt.Errorf("failed to store multipart uploads: %w", err)
 			}
 
@@ -136,7 +141,7 @@ func (s *Service) fetchAndStoreMPUs(ctx context.Context, bucketName string, buck
 				}
 
 				if len(parts) > 0 {
-					if err := s.storage.BulkInsertMultipartUploadParts(ctx, bucketID, upload.UploadID, parts); err != nil {
+					if err := bucketDB.BulkInsertMultipartUploadParts(ctx, upload.UploadID, parts); err != nil {
 						return nil, fmt.Errorf("failed to store multipart upload parts: %w", err)
 					}
 
@@ -181,12 +186,17 @@ func (s *Service) ListMPUs(ctx context.Context, bucketName string, sortDesc bool
 		return nil, fmt.Errorf("bucket not found in storage")
 	}
 
+	bucketDB, err := s.sessions.Open(s.sessionID, storedBucket.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open bucket database: %w", err)
+	}
+
 	opts := storage.MPUListOptions{
 		Limit:     limit,
 		OrderDesc: sortDesc,
 	}
 
-	uploads, err := s.storage.ListMultipartUploadsByBucket(ctx, storedBucket.ID, opts)
+	uploads, err := bucketDB.ListMultipartUploads(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list MPUs: %w", err)
 	}

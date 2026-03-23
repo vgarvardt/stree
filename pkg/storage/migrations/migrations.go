@@ -2,5 +2,8 @@ package migrations
 
 import "embed"
 
-//go:embed *.sql
-var FS embed.FS
+//go:embed storage/*.sql
+var StorageFS embed.FS
+
+//go:embed bucket/*.sql
+var BucketFS embed.FS

@@ -56,15 +56,28 @@ func main() {
 				return fmt.Errorf("could not ensure credentials store: %w", err)
 			}
 
+			// Create session manager for per-bucket cache databases
+			sessionsDir := filepath.Join(filepath.Dir(storageDSN), "sessions")
+			if storageDSN == ":memory:" {
+				sessionsDir = filepath.Join(os.TempDir(), "stree-sessions")
+			}
+			sessionMgr := storage.NewSessionManager(sessionsDir)
+			defer func() {
+				if err := sessionMgr.Close(); err != nil {
+					slog.Error("Could not properly close session manager", slogx.Error(err))
+				}
+			}()
+
 			logger.Info("Starting main GUI app",
 				slog.String("version", version),
 				slog.String("built", built),
 				slog.String("storage-dsn", storageDSN),
+				slog.String("sessions-dir", sessionsDir),
 				slog.Bool("storage-purge", storagePurge),
 			)
 
 			// Create the service layer and launch the GUI application
-			svc := service.New(stor, credStore, verbose, version)
+			svc := service.New(stor, sessionMgr, credStore, verbose, version)
 			app := gui.NewApp(svc, version)
 
 			return app.Run(ctx)

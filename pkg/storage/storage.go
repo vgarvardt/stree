@@ -122,7 +122,7 @@ func New(ctx context.Context, config Config) (*Storage, error) {
 // runMigrations applies all pending database migrations
 func (s *Storage) runMigrations() error {
 	// Create migration source from embedded files
-	source, err := iofs.New(migrations.FS, ".")
+	source, err := iofs.New(migrations.StorageFS, "storage")
 	if err != nil {
 		return fmt.Errorf("failed to create migration source: %w", err)
 	}
