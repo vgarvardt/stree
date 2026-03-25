@@ -69,7 +69,7 @@ func (s *Service) LoadBuckets(ctx context.Context) (*BucketsLoadResult, error) {
 	// Check if the session already has a cached buckets list
 	session, err := s.storage.GetSessionByID(ctx, s.sessionID)
 	if err != nil {
-		slog.Warn("Failed to get session", slogx.Error(err))
+		return nil, fmt.Errorf("could not load session: %w", err)
 	}
 
 	if session != nil && session.BucketsRefreshedAt != nil {
