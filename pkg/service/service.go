@@ -114,7 +114,7 @@ func (s *Service) Connect(ctx context.Context, bookmarkTitle string) error {
 		Debug:        s.verbose,
 	}
 
-	client, err := s3client.NewClient(context.Background(), s3Cfg, s.version)
+	client, err := s3client.NewClient(ctx, s3Cfg, s.version)
 	if err != nil {
 		return fmt.Errorf("failed to create S3 client: %w", err)
 	}

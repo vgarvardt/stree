@@ -68,7 +68,11 @@ func (cfg Config) EndpointHost() string {
 func (cfg Config) String() string {
 	secretKey := cfg.SecretKey
 	if secretKey != "" {
-		secretKey = cfg.SecretKey[0:3] + "XXX" + cfg.SecretKey[len(cfg.SecretKey)-3:]
+		if len(secretKey) > 3 {
+			secretKey = cfg.SecretKey[0:3] + "XXX"
+		} else {
+			secretKey = "XXX"
+		}
 	}
 
 	return fmt.Sprintf(
@@ -105,7 +109,7 @@ func NewClient(ctx context.Context, cfg Config, version string) (*Client, error)
 			case logging.Warn:
 				slog.Warn(fmt.Sprintf("[S3 Client WARN] "+format, v...))
 			case logging.Debug:
-				slog.Log(ctx, logLevel[cfg.Debug], fmt.Sprintf("[S3 CLient DEBUG] "+format, v...))
+				slog.Log(ctx, logLevel[cfg.Debug], fmt.Sprintf("[S3 Client DEBUG] "+format, v...))
 			}
 		})),
 		config.WithAppID("STree/"+version),
@@ -184,13 +188,11 @@ func (c *Client) GetBucketEncryption(ctx context.Context, bucketName string) (*m
 	})
 	if err != nil {
 		apiErr, ok := errors.AsType[smithy.APIError](err)
-		if !ok {
-			slog.Error("Could not get bucket encryption info", slog.String("bucket", bucketName), slogx.Error(err))
-		}
-
-		if apiErr.ErrorCode() == "ServerSideEncryptionConfigurationNotFoundError" {
+		if ok && apiErr.ErrorCode() == "ServerSideEncryptionConfigurationNotFoundError" {
 			return nil, nil
 		}
+
+		slog.Error("Could not get bucket encryption info", slog.String("bucket", bucketName), slogx.Error(err))
 
 		return nil, err
 	}
