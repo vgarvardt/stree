@@ -17,6 +17,12 @@ func (s *Service) ListBookmarks(ctx context.Context) ([]models.Bookmark, error) 
 	return s.storage.ListBookmarks(ctx)
 }
 
+// BookmarkTitleExists checks if a bookmark with the given title already exists,
+// optionally excluding a specific bookmark ID (for edit scenarios).
+func (s *Service) BookmarkTitleExists(ctx context.Context, title string, excludeID int64) (bool, error) {
+	return s.storage.BookmarkTitleExists(ctx, title, excludeID)
+}
+
 // SaveBookmark creates or updates a bookmark and stores its secret key.
 func (s *Service) SaveBookmark(ctx context.Context, bookmark *models.Bookmark, secretKey string) error {
 	if err := s.storage.UpsertBookmark(ctx, bookmark); err != nil {

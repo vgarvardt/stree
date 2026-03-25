@@ -169,6 +169,17 @@ func (s *Storage) DeleteBookmark(ctx context.Context, id int64) error {
 	return nil
 }
 
+// BookmarkTitleExists checks if a bookmark with the given title already exists,
+// optionally excluding a specific bookmark ID (for edit scenarios).
+func (s *Storage) BookmarkTitleExists(ctx context.Context, title string, excludeID int64) (bool, error) {
+	query := `SELECT COUNT(*) FROM bookmarks WHERE title = ? AND id != ?`
+	var count int
+	if err := s.db.QueryRowContext(ctx, query, title, excludeID).Scan(&count); err != nil {
+		return false, fmt.Errorf("failed to check bookmark title: %w", err)
+	}
+	return count > 0, nil
+}
+
 // UpdateBookmarkLastUsed updates the last_used_at timestamp for a bookmark
 func (s *Storage) UpdateBookmarkLastUsed(ctx context.Context, id int64) error {
 	query := `UPDATE bookmarks SET last_used_at = ? WHERE id = ?`

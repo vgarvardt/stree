@@ -157,6 +157,21 @@ func (a *App) showBookmarkDialog(existingBookmark *models.Bookmark) {
 			return
 		}
 
+		// Check for duplicate title
+		var excludeID int64
+		if isEdit {
+			excludeID = existingBookmark.ID
+		}
+		exists, err := a.svc.BookmarkTitleExists(a.svc.OpCtx(), titleEntry.Text, excludeID)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("failed to check title uniqueness: %w", err), dialogWindow)
+			return
+		}
+		if exists {
+			dialog.ShowError(fmt.Errorf("a bookmark with title %q already exists", titleEntry.Text), dialogWindow)
+			return
+		}
+
 		bookmark := &models.Bookmark{
 			Title:        titleEntry.Text,
 			Endpoint:     endpointEntry.Text,
