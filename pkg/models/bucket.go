@@ -48,10 +48,7 @@ type ObjectsContinuation struct {
 	NextVersionIDMarker string `json:"next_version_id_marker"`
 	TotalCount          int64  `json:"total_count"`
 	TotalSize           int64  `json:"total_size"`
-	LatestVersionCount  int64  `json:"latest_version_count"`
-	LatestVersionSize   int64  `json:"latest_version_size"`
 	DeleteMarkerCount   int64  `json:"delete_marker_count"`
-	FetchedCount        int    `json:"fetched_count"`
 }
 
 // BucketDetails represents bucket information stored in the database

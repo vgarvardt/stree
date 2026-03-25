@@ -199,10 +199,10 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
 
 		doneChan <- objectsRefreshResult{
-			success:            true,
-			latestVersionCount: result.LatestVersionCount,
-			latestVersionSize:  result.LatestVersionSize,
-			elapsed:            time.Since(startedAt),
+			success:      true,
+			objectsCount: result.ObjectsCount,
+			totalSize:    result.TotalSize,
+			elapsed:      time.Since(startedAt),
 		}
 	}()
 
@@ -248,10 +248,10 @@ func (a *App) resumeObjectsMetadata(bucketName string) {
 		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
 
 		doneChan <- objectsRefreshResult{
-			success:            true,
-			latestVersionCount: result.LatestVersionCount,
-			latestVersionSize:  result.LatestVersionSize,
-			elapsed:            time.Since(startedAt),
+			success:      true,
+			objectsCount: result.ObjectsCount,
+			totalSize:    result.TotalSize,
+			elapsed:      time.Since(startedAt),
 		}
 	}()
 
@@ -262,12 +262,12 @@ func (a *App) resumeObjectsMetadata(bucketName string) {
 
 // objectsRefreshResult represents the final result of the refresh operation
 type objectsRefreshResult struct {
-	success            bool
-	cancelled          bool
-	err                error
-	latestVersionCount int64
-	latestVersionSize  int64
-	elapsed            time.Duration
+	success      bool
+	cancelled    bool
+	err          error
+	objectsCount int64
+	totalSize    int64
+	elapsed      time.Duration
 }
 
 // showRefreshProgressModal displays a modal dialog with progress information
@@ -321,11 +321,12 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 			}
 
 			// Update stats if we have data
-			if latestProgress.FetchedCount > 0 {
-				statsText := fmt.Sprintf("Fetched: %s versions\nLatest: %s objects (%s)\nDelete markers: %s",
-					humanize.Comma(int64(latestProgress.FetchedCount)),
-					humanize.Comma(latestProgress.LatestVersionCount),
-					humanize.Bytes(uint64(latestProgress.LatestVersionSize)),
+			if latestProgress.TotalCount > 0 {
+				objectsCount := latestProgress.TotalCount - latestProgress.DeleteMarkerCount
+				statsText := fmt.Sprintf("Versions: %s\nObjects: %s (%s)\nDelete markers: %s",
+					humanize.Comma(latestProgress.TotalCount),
+					humanize.Comma(objectsCount),
+					humanize.Bytes(uint64(latestProgress.TotalSize)),
 					humanize.Comma(latestProgress.DeleteMarkerCount),
 				)
 				statsLabel.SetText(statsText)
@@ -364,8 +365,8 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 						a.tree.Refresh()
 						a.statusBar.SetText(fmt.Sprintf("Refreshed objects for %s: %s objects, %s in %s",
 							bucketName,
-							humanize.Comma(result.latestVersionCount),
-							humanize.Bytes(uint64(result.latestVersionSize)),
+							humanize.Comma(result.objectsCount),
+							humanize.Bytes(uint64(result.totalSize)),
 							result.elapsed.Round(time.Millisecond),
 						))
 					} else {

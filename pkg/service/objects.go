@@ -15,21 +15,17 @@ import (
 
 // ObjectsProgress represents the current progress of an objects refresh operation.
 type ObjectsProgress struct {
-	Phase              string
-	FetchedCount       int
-	TotalCount         int64
-	TotalSize          int64
-	LatestVersionCount int64
-	LatestVersionSize  int64
-	DeleteMarkerCount  int64
+	Phase             string
+	TotalCount        int64
+	TotalSize         int64
+	DeleteMarkerCount int64
 }
 
 // ObjectsRefreshResult represents the result of an objects refresh operation.
 type ObjectsRefreshResult struct {
-	UpdatedMetadata    *models.BucketMetadata
-	TotalVersionCount  int64
-	LatestVersionCount int64
-	LatestVersionSize  int64
+	UpdatedMetadata *models.BucketMetadata
+	ObjectsCount    int64
+	TotalSize       int64
 }
 
 // RefreshObjectsMetadata refreshes object versions data for a bucket.
@@ -90,7 +86,7 @@ func (s *Service) ResumeObjectsMetadata(ctx context.Context, bucketName string, 
 	cont := currentMetadata.ObjectsContinuation
 	slog.Info("Resuming objects metadata refresh",
 		slog.String("bucket", bucketName),
-		slog.Int("fetched-so-far", cont.FetchedCount),
+		slog.Int64("fetched-so-far", cont.TotalCount),
 		slog.String("key-marker", cont.NextKeyMarker))
 
 	storedBucket, err := s.storage.GetBucket(ctx, s.sessionID, bucketName)
@@ -103,13 +99,10 @@ func (s *Service) ResumeObjectsMetadata(ctx context.Context, bucketName string, 
 
 	if progress != nil {
 		progress(ObjectsProgress{
-			Phase:              fmt.Sprintf("Resuming from %s fetched objects...", humanize.Comma(int64(cont.FetchedCount))),
-			FetchedCount:       cont.FetchedCount,
-			TotalCount:         cont.TotalCount,
-			TotalSize:          cont.TotalSize,
-			LatestVersionCount: cont.LatestVersionCount,
-			LatestVersionSize:  cont.LatestVersionSize,
-			DeleteMarkerCount:  cont.DeleteMarkerCount,
+			Phase:             fmt.Sprintf("Resuming from %s fetched versions...", humanize.Comma(cont.TotalCount)),
+			TotalCount:        cont.TotalCount,
+			TotalSize:         cont.TotalSize,
+			DeleteMarkerCount: cont.DeleteMarkerCount,
 		})
 	}
 
@@ -120,12 +113,9 @@ func (s *Service) ResumeObjectsMetadata(ctx context.Context, bucketName string, 
 	}
 
 	startAggregates := &objectAggregates{
-		totalCount:         cont.TotalCount,
-		totalSize:          cont.TotalSize,
-		latestVersionCount: cont.LatestVersionCount,
-		latestVersionSize:  cont.LatestVersionSize,
-		deleteMarkerCount:  cont.DeleteMarkerCount,
-		fetchedCount:       cont.FetchedCount,
+		totalCount:        cont.TotalCount,
+		totalSize:         cont.TotalSize,
+		deleteMarkerCount: cont.DeleteMarkerCount,
 	}
 
 	bucketDB, err := s.sessions.Open(s.sessionID, storedBucket.ID)
@@ -144,12 +134,9 @@ func (s *Service) ResumeObjectsMetadata(ctx context.Context, bucketName string, 
 }
 
 type objectAggregates struct {
-	totalCount         int64
-	totalSize          int64
-	latestVersionCount int64
-	latestVersionSize  int64
-	deleteMarkerCount  int64
-	fetchedCount       int
+	totalCount        int64
+	totalSize         int64
+	deleteMarkerCount int64
 }
 
 // makeCheckpointFn creates a function that persists the current continuation state
@@ -167,10 +154,7 @@ func (s *Service) makeCheckpointFn(bucketName string, bucket models.Bucket, base
 			NextVersionIDMarker: nextPagination.NextVersionIDMarker,
 			TotalCount:          agg.totalCount,
 			TotalSize:           agg.totalSize,
-			LatestVersionCount:  agg.latestVersionCount,
-			LatestVersionSize:   agg.latestVersionSize,
 			DeleteMarkerCount:   agg.deleteMarkerCount,
-			FetchedCount:        agg.fetchedCount,
 		}
 
 		details := models.NewBucketDetails(bucket, metadata)
@@ -184,16 +168,16 @@ func (s *Service) makeCheckpointFn(bucketName string, bucket models.Bucket, base
 
 // finalizeObjectsRefresh updates metadata after a successful refresh or resume.
 func (s *Service) finalizeObjectsRefresh(ctx context.Context, bucketName string, bucket models.Bucket, currentMetadata *models.BucketMetadata, aggregates *objectAggregates) (*ObjectsRefreshResult, error) {
+	objectsCount := aggregates.totalCount - aggregates.deleteMarkerCount
+
 	slog.Info("Calculated aggregates",
 		slog.String("bucket", bucketName),
 		slog.Int64("total-count", aggregates.totalCount),
 		slog.String("total-count-fmt", humanize.Comma(aggregates.totalCount)),
 		slog.Int64("total-size", aggregates.totalSize),
 		slog.String("total-size-fmt", humanize.Bytes(uint64(aggregates.totalSize))),
-		slog.Int64("latest-version-count", aggregates.latestVersionCount),
-		slog.String("latest-version-count-fmt", humanize.Comma(aggregates.latestVersionCount)),
-		slog.Int64("latest-version-size", aggregates.latestVersionSize),
-		slog.String("latest-version-size-fmt", humanize.Bytes(uint64(aggregates.latestVersionSize))),
+		slog.Int64("objects-count", objectsCount),
+		slog.String("objects-count-fmt", humanize.Comma(objectsCount)),
 		slog.Int64("delete-marker-count", aggregates.deleteMarkerCount),
 		slog.String("delete-marker-count-fmt", humanize.Comma(aggregates.deleteMarkerCount)),
 	)
@@ -203,10 +187,9 @@ func (s *Service) finalizeObjectsRefresh(ctx context.Context, bucketName string,
 		metadata = &models.BucketMetadata{}
 	}
 
-	now := time.Now()
-	metadata.ObjectsRefreshedAt = &now
-	metadata.ObjectsCount = aggregates.latestVersionCount
-	metadata.ObjectsSize = aggregates.latestVersionSize
+	metadata.ObjectsRefreshedAt = new(time.Now())
+	metadata.ObjectsCount = objectsCount
+	metadata.ObjectsSize = aggregates.totalSize
 	metadata.DeleteMarkersCount = aggregates.deleteMarkerCount
 	metadata.ObjectsContinuation = nil // Clear continuation on success
 
@@ -218,10 +201,9 @@ func (s *Service) finalizeObjectsRefresh(ctx context.Context, bucketName string,
 	slog.Info("Updated bucket metadata", slog.String("bucket", bucketName))
 
 	return &ObjectsRefreshResult{
-		UpdatedMetadata:    metadata,
-		TotalVersionCount:  aggregates.totalCount,
-		LatestVersionCount: aggregates.latestVersionCount,
-		LatestVersionSize:  aggregates.latestVersionSize,
+		UpdatedMetadata: metadata,
+		ObjectsCount:    objectsCount,
+		TotalSize:       aggregates.totalSize,
 	}, nil
 }
 
@@ -252,17 +234,12 @@ func (s *Service) fetchAndStoreObjectVersions(
 		}
 
 		for _, version := range versions {
-			aggregates.fetchedCount++
 			aggregates.totalCount++
 
 			if version.IsDeleteMarker {
 				aggregates.deleteMarkerCount++
 			} else {
 				aggregates.totalSize += version.Size
-				if version.IsLatest {
-					aggregates.latestVersionCount++
-					aggregates.latestVersionSize += version.Size
-				}
 			}
 		}
 
@@ -273,7 +250,7 @@ func (s *Service) fetchAndStoreObjectVersions(
 			slog.Debug("Stored batch of object versions",
 				slog.String("bucket", bucketName),
 				slog.Int("batch-size", len(versions)),
-				slog.Int("total-fetched", aggregates.fetchedCount))
+				slog.Int64("total-fetched", aggregates.totalCount))
 		}
 
 		// Save checkpoint for resumability when there are more pages
@@ -283,13 +260,10 @@ func (s *Service) fetchAndStoreObjectVersions(
 
 		if progress != nil && time.Since(lastProgressUpdate) >= time.Second {
 			progress(ObjectsProgress{
-				FetchedCount:       aggregates.fetchedCount,
-				TotalCount:         aggregates.totalCount,
-				TotalSize:          aggregates.totalSize,
-				LatestVersionCount: aggregates.latestVersionCount,
-				LatestVersionSize:  aggregates.latestVersionSize,
-				DeleteMarkerCount:  aggregates.deleteMarkerCount,
-				Phase:              fmt.Sprintf("Fetching and storing object versions... (%s processed)", humanize.Comma(int64(aggregates.fetchedCount))),
+				TotalCount:        aggregates.totalCount,
+				TotalSize:         aggregates.totalSize,
+				DeleteMarkerCount: aggregates.deleteMarkerCount,
+				Phase:             fmt.Sprintf("Fetching and storing object versions... (%s processed)", humanize.Comma(aggregates.totalCount)),
 			})
 			lastProgressUpdate = time.Now()
 		}
@@ -302,7 +276,7 @@ func (s *Service) fetchAndStoreObjectVersions(
 
 	slog.Info("Completed fetching and storing object versions",
 		slog.String("bucket", bucketName),
-		slog.Int("total-count", aggregates.fetchedCount))
+		slog.Int64("total-count", aggregates.totalCount))
 
 	return aggregates, nil
 }
