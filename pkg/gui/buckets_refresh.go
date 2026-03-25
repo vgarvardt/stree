@@ -40,13 +40,13 @@ func (a *App) refreshBuckets() {
 	// Close MPU window if it's open to prevent conflicts
 	a.closeMPUWindow()
 
+	// Clear cached bucket metadata
+	a.treeData.bucketMetadata.Invalidate(nil)
+
 	// Close all open branches to reset the tree state
 	a.doUI(func() {
 		a.tree.CloseAllBranches()
 	})
-
-	// Clear cached bucket metadata
-	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
 
 	// Invalidate storage cache
 	if _, err := a.svc.InvalidateSession(a.svc.OpCtx()); err != nil {
@@ -70,12 +70,10 @@ func (a *App) refreshSingleBucket(bucketName string) {
 		a.statusBar.SetText(fmt.Sprintf("Refreshing %s...", bucketName))
 	})
 
-	// Remove cached metadata
-	delete(a.treeData.bucketMetadata, bucketName)
+	a.treeData.bucketMetadata.Delete(bucketName)
 
-	// Find the bucket
 	var bucket models.Bucket
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
 		bucket = *b
 	}
 
@@ -88,7 +86,7 @@ func (a *App) refreshSingleBucket(bucketName string) {
 		return
 	}
 
-	a.treeData.bucketMetadata[bucketName] = metadata
+	a.treeData.bucketMetadata.Set(bucketName, metadata)
 
 	a.doUIAsync(func() {
 		a.tree.Refresh()
@@ -111,8 +109,10 @@ func (a *App) loadBuckets() {
 		return
 	}
 
-	a.treeData.setBuckets(result.Buckets)
-	a.sortBuckets()
+	a.doUI(func() {
+		a.treeData.setBuckets(result.Buckets)
+		a.sortBuckets()
+	})
 
 	if result.FromCache {
 		refreshedAt := result.RefreshedAt.Format(time.RFC3339)
@@ -145,10 +145,9 @@ func (a *App) loadBuckets() {
 			doneChan <- bucketsLoadResult{success: false, err: err}
 			return
 		}
-		a.treeData.setBuckets(enriched)
 		doneChan <- bucketsLoadResult{
 			success: true,
-			count:   len(enriched),
+			buckets: enriched,
 			elapsed: time.Since(startedAt),
 		}
 	}()
@@ -163,7 +162,7 @@ func (a *App) loadBuckets() {
 type bucketsLoadResult struct {
 	success bool
 	err     error
-	count   int
+	buckets []models.Bucket
 	elapsed time.Duration
 }
 
@@ -244,8 +243,10 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 							slog.Warn("Buckets loading was cancelled")
 						}
 					} else {
+						a.treeData.setBuckets(result.buckets)
+						a.sortBuckets()
 						a.tree.Refresh()
-						a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s) in %s", result.count, result.elapsed.Round(time.Millisecond)))
+						a.statusBar.SetText(fmt.Sprintf("Loaded %d bucket(s) in %s", len(result.buckets), result.elapsed.Round(time.Millisecond)))
 					}
 				})
 				return
@@ -257,13 +258,13 @@ func (a *App) showBucketsLoadProgressModal(cancel context.CancelFunc, progressCh
 // loadBucketMetadata loads metadata for a specific bucket
 func (a *App) loadBucketMetadata(bucketName string) {
 	slog.Info("Loading metadata for bucket", slog.String("bucket", bucketName))
+
 	a.doUI(func() {
 		a.statusBar.SetText(fmt.Sprintf("Loading metadata for %s...", bucketName))
 	})
 
-	// Find the bucket
 	var bucket models.Bucket
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
 		bucket = *b
 	}
 
@@ -276,7 +277,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 		return
 	}
 
-	a.treeData.bucketMetadata[bucketName] = metadata
+	a.treeData.bucketMetadata.Set(bucketName, metadata)
 
 	statusSuffix := ""
 	if fromCache {
@@ -293,7 +294,7 @@ func (a *App) loadBucketMetadata(bucketName string) {
 func (a *App) showEncryptionDetails(bucketName string) {
 	// Find the bucket to get its encryption config
 	var encryption *models.BucketEncryption
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
 		encryption = b.Encryption
 	}
 

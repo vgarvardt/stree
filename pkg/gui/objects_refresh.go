@@ -22,17 +22,17 @@ func (a *App) forgetBucketObjects(bucketName string) {
 	// Close objects window if it's open
 	a.closeObjectsWindow()
 
+	currentMetadata, _ := a.treeData.bucketMetadata.Get(bucketName)
+	var bucket models.Bucket
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
+		bucket = *b
+	}
+
 	// Create a cancellable context for this operation
 	ctx, cancel := context.WithCancel(a.svc.OpCtx())
 
 	progressChan := make(chan service.ForgetProgress, 1)
 	doneChan := make(chan forgetResult, 1)
-
-	currentMetadata := a.treeData.bucketMetadata[bucketName]
-	var bucket models.Bucket
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
-		bucket = *b
-	}
 
 	startedAt := time.Now()
 
@@ -49,8 +49,7 @@ func (a *App) forgetBucketObjects(bucketName string) {
 			return
 		}
 
-		a.treeData.bucketMetadata[bucketName] = updatedMetadata
-		doneChan <- forgetResult{success: true, elapsed: time.Since(startedAt)}
+		doneChan <- forgetResult{success: true, elapsed: time.Since(startedAt), updatedMetadata: updatedMetadata}
 	}()
 
 	a.doUIAsync(func() {
@@ -60,10 +59,11 @@ func (a *App) forgetBucketObjects(bucketName string) {
 
 // forgetResult represents the final result of the forget operation
 type forgetResult struct {
-	success   bool
-	cancelled bool
-	err       error
-	elapsed   time.Duration
+	success         bool
+	cancelled       bool
+	err             error
+	elapsed         time.Duration
+	updatedMetadata *models.BucketMetadata
 }
 
 // showForgetProgressModal displays a modal dialog with forget progress
@@ -140,6 +140,7 @@ func (a *App) showForgetProgressModal(bucketName string, cancel context.CancelFu
 						a.statusBar.SetText(fmt.Sprintf("Forget cancelled for %s", bucketName))
 						slog.Warn("Forget operation was cancelled", slog.String("bucket", bucketName))
 					} else if result.success {
+						a.treeData.bucketMetadata.Set(bucketName, result.updatedMetadata)
 						a.tree.Refresh()
 						a.statusBar.SetText(fmt.Sprintf("Forgot objects for %s — database vacuumed in %s",
 							bucketName, result.elapsed.Round(time.Millisecond)))
@@ -167,19 +168,18 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 	// Close objects window if it's open to prevent conflicts with stale data
 	a.closeObjectsWindow()
 
+	currentMetadata, _ := a.treeData.bucketMetadata.Get(bucketName)
+	var bucket models.Bucket
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
+		bucket = *b
+	}
+
 	// Create a cancellable context for this operation
 	ctx, cancel := context.WithCancel(a.svc.OpCtx())
 
 	// Create progress tracking channels
 	progressChan := make(chan service.ObjectsProgress, 1)
 	doneChan := make(chan objectsRefreshResult, 1)
-
-	// Get current metadata and bucket info for the service call
-	currentMetadata := a.treeData.bucketMetadata[bucketName]
-	var bucket models.Bucket
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
-		bucket = *b
-	}
 
 	// Start the refresh operation in a goroutine
 	go func() {
@@ -195,14 +195,12 @@ func (a *App) refreshObjectsMetadata(bucketName string) {
 			return
 		}
 
-		// Update tree data with new metadata
-		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
-
 		doneChan <- objectsRefreshResult{
-			success:      true,
-			objectsCount: result.ObjectsCount,
-			totalSize:    result.TotalSize,
-			elapsed:      time.Since(startedAt),
+			success:         true,
+			objectsCount:    result.ObjectsCount,
+			totalSize:       result.TotalSize,
+			elapsed:         time.Since(startedAt),
+			updatedMetadata: result.UpdatedMetadata,
 		}
 	}()
 
@@ -221,16 +219,16 @@ func (a *App) resumeObjectsMetadata(bucketName string) {
 	// Close objects window if it's open to prevent conflicts with stale data
 	a.closeObjectsWindow()
 
+	currentMetadata, _ := a.treeData.bucketMetadata.Get(bucketName)
+	var bucket models.Bucket
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
+		bucket = *b
+	}
+
 	ctx, cancel := context.WithCancel(a.svc.OpCtx())
 
 	progressChan := make(chan service.ObjectsProgress, 1)
 	doneChan := make(chan objectsRefreshResult, 1)
-
-	currentMetadata := a.treeData.bucketMetadata[bucketName]
-	var bucket models.Bucket
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
-		bucket = *b
-	}
 
 	go func() {
 		result, err := a.svc.ResumeObjectsMetadata(ctx, bucketName, currentMetadata, bucket, func(p service.ObjectsProgress) {
@@ -245,13 +243,12 @@ func (a *App) resumeObjectsMetadata(bucketName string) {
 			return
 		}
 
-		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
-
 		doneChan <- objectsRefreshResult{
-			success:      true,
-			objectsCount: result.ObjectsCount,
-			totalSize:    result.TotalSize,
-			elapsed:      time.Since(startedAt),
+			success:         true,
+			objectsCount:    result.ObjectsCount,
+			totalSize:       result.TotalSize,
+			elapsed:         time.Since(startedAt),
+			updatedMetadata: result.UpdatedMetadata,
 		}
 	}()
 
@@ -262,12 +259,13 @@ func (a *App) resumeObjectsMetadata(bucketName string) {
 
 // objectsRefreshResult represents the final result of the refresh operation
 type objectsRefreshResult struct {
-	success      bool
-	cancelled    bool
-	err          error
-	objectsCount int64
-	totalSize    int64
-	elapsed      time.Duration
+	success         bool
+	cancelled       bool
+	err             error
+	objectsCount    int64
+	totalSize       int64
+	elapsed         time.Duration
+	updatedMetadata *models.BucketMetadata
 }
 
 // showRefreshProgressModal displays a modal dialog with progress information
@@ -362,6 +360,7 @@ func (a *App) showRefreshProgressModal(bucketName string, cancel context.CancelF
 						a.statusBar.SetText(fmt.Sprintf("Refresh cancelled for %s (incomplete data)", bucketName))
 						slog.Warn("Refresh operation was cancelled", slog.String("bucket", bucketName))
 					} else if result.success {
+						a.treeData.bucketMetadata.Set(bucketName, result.updatedMetadata)
 						a.tree.Refresh()
 						a.statusBar.SetText(fmt.Sprintf("Refreshed objects for %s: %s objects, %s in %s",
 							bucketName,

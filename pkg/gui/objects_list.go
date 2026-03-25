@@ -264,9 +264,15 @@ func (v *objectsListView) loadObjects() {
 		v.refreshButton.Disable()
 	})
 
+	var foundBucket *models.Bucket
+	if b, ok := v.app.treeData.bucketIndex.Get(v.bucketName); ok {
+		bucketCopy := *b
+		foundBucket = &bucketCopy
+	}
+	metadata, _ := v.app.treeData.bucketMetadata.Get(v.bucketName)
+
 	// Ensure bucket exists in storage (handles the case where bucket was loaded but not yet stored)
-	if foundBucket := v.app.treeData.bucketIndex[v.bucketName]; foundBucket != nil {
-		metadata := v.app.treeData.bucketMetadata[v.bucketName]
+	if foundBucket != nil {
 		if err := v.app.svc.EnsureBucketInStorage(v.app.svc.OpCtx(), *foundBucket, metadata); err != nil {
 			slog.Error("Failed to ensure bucket in storage", slogx.Error(err), slog.String("bucket", v.bucketName))
 			v.app.doUI(func() {

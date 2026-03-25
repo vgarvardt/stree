@@ -46,26 +46,28 @@ type App struct {
 
 // TreeData holds the hierarchical data for the tree widget
 type TreeData struct {
-	buckets        []models.Bucket
-	bucketIndex    map[string]*models.Bucket         // O(1) lookup by name
-	bucketMetadata map[string]*models.BucketMetadata // bucketName -> metadata
-	searchFilter   string                            // search filter for bucket names
-	sortMode       service.SortMode                  // current sorting mode
+	buckets        []models.Bucket                    // guarded by UI thread (setBuckets/sortBuckets must run in doUI)
+	bucketIndex    *SafeMap[*models.Bucket]            // O(1) lookup by name, thread-safe
+	bucketMetadata *SafeMap[*models.BucketMetadata]    // bucketName -> metadata, thread-safe
+	searchFilter   string                              // search filter for bucket names
+	sortMode       service.SortMode                    // current sorting mode
 }
 
 // setBuckets replaces the bucket list and rebuilds the name index.
+// Must be called on the UI thread (protects the buckets slice read by tree callbacks).
 func (td *TreeData) setBuckets(buckets []models.Bucket) {
 	td.buckets = buckets
 	td.rebuildBucketIndex()
 }
 
 // rebuildBucketIndex rebuilds the name→bucket pointer map from the current slice.
-// Must be called after sorting or modifying individual bucket entries.
+// Must be called on the UI thread after sorting or modifying individual bucket entries.
 func (td *TreeData) rebuildBucketIndex() {
-	td.bucketIndex = make(map[string]*models.Bucket, len(td.buckets))
+	newIndex := make(map[string]*models.Bucket, len(td.buckets))
 	for i := range td.buckets {
-		td.bucketIndex[td.buckets[i].Name] = &td.buckets[i]
+		newIndex[td.buckets[i].Name] = &td.buckets[i]
 	}
+	td.bucketIndex.Invalidate(newIndex)
 }
 
 // NewApp creates a new GUI application
@@ -79,8 +81,8 @@ func NewApp(svc *service.Service, version string) *App {
 		svc:     svc,
 		treeData: &TreeData{
 			buckets:        []models.Bucket{},
-			bucketIndex:    make(map[string]*models.Bucket),
-			bucketMetadata: make(map[string]*models.BucketMetadata),
+			bucketIndex:    NewSafeMap[*models.Bucket](),
+			bucketMetadata: NewSafeMap[*models.BucketMetadata](),
 			searchFilter:   "",
 			sortMode:       service.SortNameAsc,
 		},
@@ -201,8 +203,7 @@ func (a *App) createTree() *widget.Tree {
 
 			// Check if this is a bucket node
 			if bucketName, ok := strings.CutPrefix(uid, uidPrefixBucket); ok {
-				metadata, exists := a.treeData.bucketMetadata[bucketName]
-				if !exists {
+				if !a.treeData.bucketMetadata.Has(bucketName) {
 					return []string{}
 				}
 
@@ -215,7 +216,7 @@ func (a *App) createTree() *widget.Tree {
 				}
 
 				// Add encryption item if bucket has encryption configured
-				if b := a.treeData.bucketIndex[bucketName]; b != nil && b.Encryption != nil {
+				if b, ok := a.treeData.bucketIndex.Get(bucketName); ok && b.Encryption != nil {
 					items = append(items, uidPrefixMeta+bucketName+":encryption")
 				}
 
@@ -224,7 +225,6 @@ func (a *App) createTree() *widget.Tree {
 					uidPrefixMeta+bucketName+":mpus",
 				)
 
-				_ = metadata // Avoid unused variable
 				return items
 			}
 
@@ -280,7 +280,7 @@ func (a *App) createTree() *widget.Tree {
 				icon := c.Objects[0].(*widget.Icon)
 				label := c.Objects[1].(*widget.Label)
 				var hasEncryption bool
-				if bucket := a.treeData.bucketIndex[bucketName]; bucket != nil {
+				if bucket, ok := a.treeData.bucketIndex.Get(bucketName); ok {
 					label.SetText(bucketName + " @ " + bucket.CreationDate.Format(time.RFC3339))
 					hasEncryption = bucket.Encryption != nil
 				}
@@ -321,7 +321,7 @@ func (a *App) createTree() *widget.Tree {
 				bucketName := rest[:lastColon]
 				fieldName := rest[lastColon+1:]
 
-				metadata, exists := a.treeData.bucketMetadata[bucketName]
+				metadata, exists := a.treeData.bucketMetadata.Get(bucketName)
 				if !exists {
 					label.SetText("Loading...")
 					icon.SetResource(theme.InfoIcon())
@@ -331,7 +331,7 @@ func (a *App) createTree() *widget.Tree {
 
 				switch fieldName {
 				case "created":
-					if bucket := a.treeData.bucketIndex[bucketName]; bucket != nil {
+					if bucket, ok := a.treeData.bucketIndex.Get(bucketName); ok {
 						label.SetText("Created: " + bucket.CreationDate.Format(time.RFC3339))
 					} else {
 						label.SetText("Created: Unknown")
@@ -452,7 +452,7 @@ func (a *App) createTree() *widget.Tree {
 	tree.OnBranchOpened = func(uid string) {
 		// Check if this is a bucket that hasn't been loaded yet
 		if bucketName, ok := strings.CutPrefix(uid, uidPrefixBucket); ok {
-			if _, exists := a.treeData.bucketMetadata[bucketName]; !exists {
+			if !a.treeData.bucketMetadata.Has(bucketName) {
 				go a.loadBucketMetadata(bucketName)
 			}
 		}
@@ -463,20 +463,20 @@ func (a *App) createTree() *widget.Tree {
 
 // closeObjectsWindow closes the objects list window if it's open
 func (a *App) closeObjectsWindow() {
-	if a.objectsWindow != nil {
-		a.doUIAsync(func() {
+	a.doUIAsync(func() {
+		if a.objectsWindow != nil {
 			a.objectsWindow.Close()
 			a.objectsWindow = nil
-		})
-	}
+		}
+	})
 }
 
 // closeMPUWindow closes the MPU list window if it's open
 func (a *App) closeMPUWindow() {
-	if a.mpuWindow != nil {
-		a.doUIAsync(func() {
+	a.doUIAsync(func() {
+		if a.mpuWindow != nil {
 			a.mpuWindow.Close()
 			a.mpuWindow = nil
-		})
-	}
+		}
+	})
 }

@@ -23,19 +23,18 @@ func (a *App) refreshMPUsMetadata(bucketName string) {
 	// Close MPU window if it's open to prevent conflicts with stale data
 	a.closeMPUWindow()
 
+	currentMetadata, _ := a.treeData.bucketMetadata.Get(bucketName)
+	var bucket models.Bucket
+	if b, ok := a.treeData.bucketIndex.Get(bucketName); ok {
+		bucket = *b
+	}
+
 	// Create a cancellable context for this operation
 	ctx, cancel := context.WithCancel(a.svc.OpCtx())
 
 	// Create progress tracking channels
 	progressChan := make(chan service.MPUProgress, 1)
 	doneChan := make(chan mpuRefreshDone, 1)
-
-	// Get current metadata and bucket info for the service call
-	currentMetadata := a.treeData.bucketMetadata[bucketName]
-	var bucket models.Bucket
-	if b := a.treeData.bucketIndex[bucketName]; b != nil {
-		bucket = *b
-	}
 
 	// Start the refresh operation in a goroutine
 	go func() {
@@ -51,15 +50,13 @@ func (a *App) refreshMPUsMetadata(bucketName string) {
 			return
 		}
 
-		// Update tree data with new metadata
-		a.treeData.bucketMetadata[bucketName] = result.UpdatedMetadata
-
 		doneChan <- mpuRefreshDone{
-			success:      true,
-			uploadsCount: result.UploadsCount,
-			partsCount:   result.PartsCount,
-			totalSize:    result.TotalSize,
-			elapsed:      time.Since(startedAt),
+			success:         true,
+			uploadsCount:    result.UploadsCount,
+			partsCount:      result.PartsCount,
+			totalSize:       result.TotalSize,
+			elapsed:         time.Since(startedAt),
+			updatedMetadata: result.UpdatedMetadata,
 		}
 	}()
 
@@ -71,13 +68,14 @@ func (a *App) refreshMPUsMetadata(bucketName string) {
 
 // mpuRefreshDone represents the final result of the MPU refresh operation
 type mpuRefreshDone struct {
-	success      bool
-	cancelled    bool
-	err          error
-	uploadsCount int64
-	partsCount   int64
-	totalSize    int64
-	elapsed      time.Duration
+	success         bool
+	cancelled       bool
+	err             error
+	uploadsCount    int64
+	partsCount      int64
+	totalSize       int64
+	elapsed         time.Duration
+	updatedMetadata *models.BucketMetadata
 }
 
 // showMPURefreshProgressModal displays a modal dialog showing refresh progress
@@ -133,6 +131,7 @@ func (a *App) showMPURefreshProgressModal(bucketName string, cancel context.Canc
 					} else if result.err != nil {
 						a.statusBar.SetText(fmt.Sprintf("Error refreshing MPUs: %v", result.err))
 					} else {
+						a.treeData.bucketMetadata.Set(bucketName, result.updatedMetadata)
 						a.tree.Refresh()
 						a.statusBar.SetText(fmt.Sprintf("Refreshed %s MPU(s), %s part(s), %s in %s",
 							humanize.Comma(result.uploadsCount),

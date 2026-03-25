@@ -108,7 +108,7 @@ func (a *App) disconnect() {
 
 	// Clear buckets and metadata
 	a.treeData.setBuckets([]models.Bucket{})
-	a.treeData.bucketMetadata = make(map[string]*models.BucketMetadata)
+	a.treeData.bucketMetadata.Invalidate(nil)
 
 	// Clear selection
 	a.bookmarkSelect.SetSelected("")
