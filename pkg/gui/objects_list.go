@@ -150,67 +150,73 @@ func (v *objectsListView) createTable() *widget.Table {
 		},
 		// Create
 		func() fyne.CanvasObject {
-			label := widget.NewLabel("Template")
-			label.Truncation = fyne.TextTruncateEllipsis
-			return label
+			return newTappableLabel("Template")
 		},
 		// Update
 		func(cell widget.TableCellID, obj fyne.CanvasObject) {
-			label := obj.(*widget.Label)
+			tl := obj.(*tappableLabel)
 
 			// Header row
 			if cell.Row == 0 {
 				headers := []string{"Key", "Version ID", "Latest", "Size", "Last Modified", "Delete Marker", "Storage Class"}
 				if cell.Col < len(headers) {
-					label.SetText(headers[cell.Col])
-					label.TextStyle = fyne.TextStyle{Bold: true}
+					tl.SetText(headers[cell.Col])
+					tl.label.TextStyle = fyne.TextStyle{Bold: true}
 				}
+				tl.onSecondaryTap = nil
 				return
 			}
 
 			// Data rows
 			rowIndex := cell.Row - 1
 			if rowIndex >= len(v.objects) {
-				label.SetText("")
+				tl.SetText("")
+				tl.onSecondaryTap = nil
 				return
 			}
 
 			objectVersion := v.objects[rowIndex]
-			label.TextStyle = fyne.TextStyle{Bold: false}
+			tl.label.TextStyle = fyne.TextStyle{Bold: false}
 
 			switch cell.Col {
 			case 0: // Key
-				label.SetText(objectVersion.Key)
+				tl.SetText(objectVersion.Key)
 			case 1: // Version ID
 				versionID := objectVersion.VersionID
 				if versionID == "" {
 					versionID = "null"
 				}
-				label.SetText(versionID)
+				tl.SetText(versionID)
 			case 2: // Latest
 				if objectVersion.IsLatest {
-					label.SetText("Yes")
+					tl.SetText("Yes")
 				} else {
-					label.SetText("No")
+					tl.SetText("No")
 				}
 			case 3: // Size
-				label.SetText(humanize.Bytes(uint64(objectVersion.Size)))
+				tl.SetText(humanize.Bytes(uint64(objectVersion.Size)))
 			case 4: // Last Modified
-				label.SetText(objectVersion.LastModified.Format(time.RFC3339))
+				tl.SetText(objectVersion.LastModified.Format(time.RFC3339))
 			case 5: // Delete Marker
 				if objectVersion.IsDeleteMarker {
-					label.SetText("Yes")
+					tl.SetText("Yes")
 				} else {
-					label.SetText("No")
+					tl.SetText("No")
 				}
 			case 6: // Storage Class
 				storageClass := objectVersion.StorageClass
 				if storageClass == "" {
 					storageClass = "-"
 				}
-				label.SetText(storageClass)
+				tl.SetText(storageClass)
 			default:
-				label.SetText("")
+				tl.SetText("")
+			}
+
+			// Set right-click handler for data rows — capture objectVersion by value
+			ov := objectVersion
+			tl.onSecondaryTap = func(pe *fyne.PointEvent) {
+				v.showObjectContextMenu(ov, pe.AbsolutePosition)
 			}
 		},
 	)
@@ -330,5 +336,60 @@ func (v *objectsListView) initializeSelections() {
 	}
 	v.filterSelect.OnChanged = func(selected string) {
 		go v.loadObjects()
+	}
+}
+
+// showObjectContextMenu displays a context menu for an object row
+func (v *objectsListView) showObjectContextMenu(obj models.ObjectVersion, position fyne.Position) {
+	copyKeyItem := fyne.NewMenuItem("Copy key", func() {
+		v.window.Clipboard().SetContent(obj.Key)
+		slog.Info("Copied object key to clipboard", slog.String("key", obj.Key))
+		v.statusBar.SetText(fmt.Sprintf("Copied key %q to clipboard", obj.Key))
+	})
+	copyKeyItem.Icon = theme.ContentCopyIcon()
+
+	copyVersionIDItem := fyne.NewMenuItem("Copy version ID", func() {
+		versionID := obj.VersionID
+		if versionID == "" {
+			versionID = "null"
+		}
+		v.window.Clipboard().SetContent(versionID)
+		slog.Info("Copied version ID to clipboard", slog.String("versionID", versionID))
+		v.statusBar.SetText(fmt.Sprintf("Copied version ID %q to clipboard", versionID))
+	})
+	copyVersionIDItem.Icon = theme.ContentCopyIcon()
+
+	menu := fyne.NewMenu("", copyKeyItem, copyVersionIDItem)
+	popUpMenu := widget.NewPopUpMenu(menu, v.window.Canvas())
+	popUpMenu.ShowAtPosition(position)
+}
+
+// tappableLabel is a label widget that supports right-click (secondary tap) for context menus.
+type tappableLabel struct {
+	widget.BaseWidget
+	label          *widget.Label
+	onSecondaryTap func(*fyne.PointEvent)
+}
+
+func newTappableLabel(text string) *tappableLabel {
+	tl := &tappableLabel{
+		label: widget.NewLabel(text),
+	}
+	tl.label.Truncation = fyne.TextTruncateEllipsis
+	tl.ExtendBaseWidget(tl)
+	return tl
+}
+
+func (tl *tappableLabel) SetText(text string) {
+	tl.label.SetText(text)
+}
+
+func (tl *tappableLabel) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(tl.label)
+}
+
+func (tl *tappableLabel) TappedSecondary(pe *fyne.PointEvent) {
+	if tl.onSecondaryTap != nil {
+		tl.onSecondaryTap(pe)
 	}
 }
