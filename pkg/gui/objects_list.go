@@ -7,6 +7,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/cappuccinotm/slogx"
@@ -39,6 +40,12 @@ func (a *App) showObjectsList(bucketName string) {
 		modalWindow.SetOnClosed(func() {
 			a.objectsWindow = nil
 		})
+
+		// Add Cmd+W / Ctrl+W shortcut to close the window
+		modalWindow.Canvas().AddShortcut(
+			&desktop.CustomShortcut{KeyName: fyne.KeyW, Modifier: fyne.KeyModifierShortcutDefault},
+			func(_ fyne.Shortcut) { modalWindow.Close() },
+		)
 
 		// Create the objects list view
 		objectsView := newObjectsListView(a, modalWindow, bucketName)
